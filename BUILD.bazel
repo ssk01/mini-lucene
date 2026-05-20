@@ -99,6 +99,8 @@ cc_library(
         "src/analysis/lower_case_tokenizer.cpp",
         "src/analysis/lower_case_filter.cpp",
         "src/analysis/stop_filter.cpp",
+        "src/analysis/porter_stemmer.cpp",
+        "src/analysis/porter_stem_filter.cpp",
         "src/analysis/simple_analyzer.cpp",
         "src/analysis/stop_analyzer.cpp",
     ],
@@ -110,6 +112,8 @@ cc_library(
         "include/minilucene/analysis/letter_tokenizer.h",
         "include/minilucene/analysis/lower_case_filter.h",
         "include/minilucene/analysis/lower_case_tokenizer.h",
+        "include/minilucene/analysis/porter_stem_filter.h",
+        "include/minilucene/analysis/porter_stemmer.h",
         "include/minilucene/analysis/stop_filter.h",
         "include/minilucene/analysis/analyzer.h",
         "include/minilucene/analysis/simple_analyzer.h",
@@ -124,6 +128,15 @@ cc_test(
     srcs = ["tests/unit/document/document_test.cpp"],
     deps = [
         ":document",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "porter_stemmer_test",
+    srcs = ["tests/unit/analysis/porter_stemmer_test.cpp"],
+    deps = [
+        ":analysis",
         "@googletest//:gtest_main",
     ],
 )
@@ -217,13 +230,16 @@ cc_library(
         "src/search/prefix_query.cpp",
         "src/search/wildcard_query.cpp",
         "src/search/fuzzy_query.cpp",
+        "src/search/hits.cpp",
         "src/query_parser/query_parser.cpp",
     ],
     hdrs = [
         "include/minilucene/search/boolean_clause.h",
         "include/minilucene/search/boolean_query.h",
         "include/minilucene/search/fuzzy_query.h",
+        "include/minilucene/search/hits.h",
         "include/minilucene/search/index_searcher.h",
+        "include/minilucene/search/searcher.h",
         "include/minilucene/search/phrase_query.h",
         "include/minilucene/search/prefix_query.h",
         "include/minilucene/search/query.h",
