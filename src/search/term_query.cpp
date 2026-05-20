@@ -14,10 +14,13 @@ public:
     TermScorer(std::unique_ptr<index::TermDocs> docs, float idf, float query_weight,
                index::IndexReader& reader, int field_number)
         : docs_(std::move(docs)), idf_(idf), query_weight_(query_weight)
-        , reader_(reader), field_number_(field_number) {}
+        , reader_(reader), field_number_(field_number) {
+        docs_->Next();
+    }
 
     bool Next() override { return docs_->Next(); }
     int Doc() const override { return docs_->Doc(); }
+
     float Score() override {
         Similarity sim;
         float tf = sim.Tf(docs_->Freq());
@@ -37,7 +40,7 @@ private:
 
 TermQuery::TermQuery(index::Term term) : term_(std::move(term)) {}
 
-std::unique_ptr<Scorer> TermQuery::Scorer(index::IndexReader& reader) const {
+std::unique_ptr<Scorer> TermQuery::CreateScorer(index::IndexReader& reader) const {
     int doc_freq = reader.DocFreq(term_);
     if (doc_freq == 0) return nullptr;
 
@@ -47,7 +50,7 @@ std::unique_ptr<Scorer> TermQuery::Scorer(index::IndexReader& reader) const {
     auto docs = reader.Docs(term_);
     if (!docs) return nullptr;
 
-    float query_norm = 1.0f / std::sqrt(1.0f);  // normalize single term
+    float query_norm = 1.0f;
 
     return std::make_unique<TermScorer>(std::move(docs), idf, query_norm,
                                         reader, term_.FieldNumber());

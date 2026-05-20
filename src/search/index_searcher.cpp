@@ -1,8 +1,7 @@
 #include "minilucene/search/index_searcher.h"
 #include "minilucene/index/index_reader.h"
 #include "minilucene/search/scorer.h"
-#include "minilucene/search/term_query.h"
-#include "minilucene/index/term_docs.h"
+#include "minilucene/search/query.h"
 #include "minilucene/util/priority_queue.h"
 
 #include <algorithm>
@@ -26,8 +25,8 @@ protected:
 IndexSearcher::IndexSearcher(index::IndexReader& reader)
     : reader_(&reader) {}
 
-TopDocs IndexSearcher::Search(const TermQuery& query, int top_k) const {
-    auto scorer = query.Scorer(*reader_);
+TopDocs IndexSearcher::Search(const Query& query, int top_k) const {
+    auto scorer = query.CreateScorer(*reader_);
     if (!scorer) return TopDocs{};
 
     HitQueue queue(top_k);

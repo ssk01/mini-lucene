@@ -1,5 +1,6 @@
 #pragma once
 
+#include "minilucene/search/query.h"
 #include "minilucene/search/top_docs.h"
 
 #include <memory>
@@ -11,12 +12,10 @@ class IndexReader;
 
 namespace search {
 
-class TermQuery;
-
 class IndexSearcher {
 public:
     explicit IndexSearcher(index::IndexReader& reader);
-    TopDocs Search(const TermQuery& query, int top_k) const;
+    TopDocs Search(const Query& query, int top_k) const;
 
 private:
     index::IndexReader* reader_;
