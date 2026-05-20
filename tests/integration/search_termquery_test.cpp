@@ -37,16 +37,18 @@ TEST(TermQuery, RankByFrequency) {
     search::TermQuery query(index::Term(0, "fox"));
 
     auto result = searcher.Search(query, 10);
-    EXPECT_EQ(result.total_hits, 2);
-    ASSERT_EQ(result.score_docs.size(), 2);
+    EXPECT_EQ(result.total_hits, 3);
+    ASSERT_EQ(result.score_docs.size(), 3);
 }
 
 TEST(TermQuery, IdfPrefersRareTerms) {
     store::RAMDirectory dir;
     auto analyzer = std::make_unique<analysis::SimpleAnalyzer>();
     index::IndexWriter w(dir, std::move(analyzer));
-    AddDoc(w, "the");
-    AddDoc(w, "quantum");
+    for (int i = 0; i < 100; ++i) {
+        AddDoc(w, "the");
+    }
+    AddDoc(w, "the quantum");
     w.Close();
 
     index::SegmentReader reader(dir, "_0");
