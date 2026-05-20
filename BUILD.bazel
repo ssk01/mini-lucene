@@ -29,6 +29,52 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "store",
+    srcs = [
+        "src/store/index_output.cpp",
+        "src/store/index_input.cpp",
+        "src/store/ram_directory.cpp",
+        "src/store/fs_directory.cpp",
+    ],
+    hdrs = [
+        "include/minilucene/store/directory.h",
+        "include/minilucene/store/index_input.h",
+        "include/minilucene/store/index_output.h",
+        "include/minilucene/store/ram_directory.h",
+        "include/minilucene/store/fs_directory.h",
+    ],
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+)
+
+cc_test(
+    name = "vint_test",
+    srcs = ["tests/unit/store/vint_test.cpp"],
+    deps = [
+        ":store",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "ram_directory_test",
+    srcs = ["tests/unit/store/ram_directory_test.cpp"],
+    deps = [
+        ":store",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "fs_directory_test",
+    srcs = ["tests/unit/store/fs_directory_test.cpp"],
+    deps = [
+        ":store",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "p1_demo",
     srcs = ["examples/p1_demo.cpp"],
