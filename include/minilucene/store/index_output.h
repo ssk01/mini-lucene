@@ -16,6 +16,7 @@ public:
     void WriteVLong(int64_t v);
     void WriteString(const std::string& s);
 
+    virtual int64_t FilePointer() = 0;
     virtual void Flush() = 0;
     virtual void Close() = 0;
 };

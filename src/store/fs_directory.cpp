@@ -19,6 +19,10 @@ public:
         file_.put(static_cast<char>(b));
     }
 
+    int64_t FilePointer() override {
+        return file_.tellp();
+    }
+
     void Flush() override {
         file_.flush();
     }

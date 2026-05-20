@@ -142,6 +142,44 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "index",
+    srcs = [
+        "src/index/field_info.cpp",
+        "src/index/field_infos.cpp",
+        "src/index/term_infos_writer.cpp",
+        "src/index/document_writer.cpp",
+        "src/index/index_writer.cpp",
+        "src/index/segment_infos.cpp",
+    ],
+    hdrs = [
+        "include/minilucene/index/document_writer.h",
+        "include/minilucene/index/field_info.h",
+        "include/minilucene/index/field_infos.h",
+        "include/minilucene/index/index_writer.h",
+        "include/minilucene/index/segment_infos.h",
+        "include/minilucene/index/term.h",
+        "include/minilucene/index/term_info.h",
+        "include/minilucene/index/term_infos_writer.h",
+    ],
+    strip_include_prefix = "include",
+    deps = [
+        ":analysis",
+        ":document",
+        ":store",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_test(
+    name = "document_writer_test",
+    srcs = ["tests/unit/index/document_writer_test.cpp"],
+    deps = [
+        ":index",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "p1_demo",
     srcs = ["examples/p1_demo.cpp"],

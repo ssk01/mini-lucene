@@ -18,6 +18,10 @@ public:
         file_->data.push_back(b);
     }
 
+    int64_t FilePointer() override {
+        return static_cast<int64_t>(file_->data.size());
+    }
+
     void Flush() override {}
 
     void Close() override {}
