@@ -336,3 +336,9 @@ cc_binary(
     deps = [":index", ":search", ":store", ":document"],
 )
 
+cc_binary(
+    name = "delete_files",
+    srcs = ["examples/delete_files.cpp"],
+    deps = [":index", ":store"],
+)
+
