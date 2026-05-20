@@ -206,17 +206,25 @@ cc_library(
         "src/search/index_searcher.cpp",
         "src/search/boolean_query.cpp",
         "src/search/phrase_query.cpp",
+        "src/search/prefix_query.cpp",
+        "src/search/wildcard_query.cpp",
+        "src/search/fuzzy_query.cpp",
+        "src/query_parser/query_parser.cpp",
     ],
     hdrs = [
         "include/minilucene/search/boolean_clause.h",
         "include/minilucene/search/boolean_query.h",
+        "include/minilucene/search/fuzzy_query.h",
         "include/minilucene/search/index_searcher.h",
         "include/minilucene/search/phrase_query.h",
+        "include/minilucene/search/prefix_query.h",
         "include/minilucene/search/query.h",
         "include/minilucene/search/scorer.h",
         "include/minilucene/search/similarity.h",
         "include/minilucene/search/term_query.h",
         "include/minilucene/search/top_docs.h",
+        "include/minilucene/search/wildcard_query.h",
+        "include/minilucene/query_parser/query_parser.h",
     ],
     strip_include_prefix = "include",
     deps = [
@@ -247,6 +255,24 @@ cc_test(
 cc_test(
     name = "phrase_query_test",
     srcs = ["tests/unit/search/phrase_query_test.cpp"],
+    deps = [
+        ":search",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "advanced_query_test",
+    srcs = ["tests/unit/search/advanced_query_test.cpp"],
+    deps = [
+        ":search",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "query_parser_test",
+    srcs = ["tests/unit/query_parser/query_parser_test.cpp"],
     deps = [
         ":search",
         "@googletest//:gtest_main",
