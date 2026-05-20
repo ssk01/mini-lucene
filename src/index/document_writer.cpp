@@ -78,7 +78,6 @@ void DocumentWriter::AddDocument(const std::string& segment, const document::Doc
 
         ti.freq_pointer = frq->FilePointer();
 
-        frq->WriteVInt(1);
         frq->WriteVInt(0);
         frq->WriteVInt(posting.freq);
 

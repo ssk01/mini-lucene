@@ -1,0 +1,159 @@
+#include "minilucene/index/segment_reader.h"
+#include "minilucene/index/field_infos.h"
+#include "minilucene/index/term_infos_reader.h"
+#include "minilucene/store/directory.h"
+#include "minilucene/store/index_input.h"
+
+#include <stdexcept>
+
+namespace minilucene {
+namespace index {
+
+SegmentTermEnum::SegmentTermEnum(store::IndexInput* tis)
+    : tis_(tis) {}
+
+SegmentTermEnum::~SegmentTermEnum() {
+    Close();
+}
+
+bool SegmentTermEnum::Next() {
+    if (ended_) return false;
+    try {
+        int field_num = tis_->ReadVInt();
+        std::string text = tis_->ReadString();
+        term_ = Term(field_num, text);
+        doc_freq_ = tis_->ReadVInt();
+        freq_pointer_ = tis_->ReadVLong();
+        prox_pointer_ = tis_->ReadVLong();
+        return true;
+    } catch (...) {
+        ended_ = true;
+        return false;
+    }
+}
+
+void SegmentTermEnum::Close() {
+    if (tis_) {
+        tis_->Close();
+        tis_.reset();
+    }
+}
+
+SegmentTermDocs::SegmentTermDocs(std::unique_ptr<store::IndexInput> frq,
+                                 int64_t freq_pointer, int doc_freq)
+    : frq_(std::move(frq)), remaining_(doc_freq) {
+    frq_->Seek(freq_pointer);
+}
+
+SegmentTermDocs::~SegmentTermDocs() {
+    Close();
+}
+
+bool SegmentTermDocs::Next() {
+    if (remaining_ <= 0) return false;
+    try {
+        int delta = frq_->ReadVInt();
+        doc_ += delta;
+        freq_ = frq_->ReadVInt();
+        --remaining_;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+void SegmentTermDocs::Close() {
+    if (frq_) {
+        frq_->Close();
+        frq_.reset();
+    }
+}
+
+SegmentTermPositions::SegmentTermPositions(std::unique_ptr<store::IndexInput> frq,
+                                           std::unique_ptr<store::IndexInput> prx,
+                                           int64_t freq_pointer, int64_t prox_pointer,
+                                           int doc_freq)
+    : frq_(std::move(frq)), prx_(std::move(prx))
+    , remaining_(doc_freq), remaining_positions_(0) {
+    frq_->Seek(freq_pointer);
+    prx_->Seek(prox_pointer);
+}
+
+SegmentTermPositions::~SegmentTermPositions() {
+    Close();
+}
+
+bool SegmentTermPositions::Next() {
+    if (remaining_ <= 0) return false;
+    try {
+        int delta = frq_->ReadVInt();
+        doc_ += delta;
+        freq_ = frq_->ReadVInt();
+        --remaining_;
+        remaining_positions_ = freq_;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+int SegmentTermPositions::NextPosition() {
+    --remaining_positions_;
+    return prx_->ReadVInt();
+}
+
+void SegmentTermPositions::Close() {
+    if (frq_) frq_->Close();
+    if (prx_) prx_->Close();
+}
+
+SegmentReader::SegmentReader(store::Directory& dir, const std::string& segment)
+    : dir_(dir), segment_(segment) {
+    field_infos_ = FieldInfos::Read(dir_, segment_);
+    term_infos_ = std::make_unique<TermInfosReader>(dir_, segment_);
+    if (dir_.FileExists(segment_ + ".nrm")) {
+        auto nrm = dir_.OpenInput(segment_ + ".nrm");
+        num_docs_ = 1;
+        nrm->Close();
+    }
+}
+
+SegmentReader::~SegmentReader() {
+    Close();
+}
+
+std::unique_ptr<TermEnum> SegmentReader::Terms() {
+    auto tis = dir_.OpenInput(segment_ + ".tis");
+    return std::make_unique<SegmentTermEnum>(tis.release());
+}
+
+std::unique_ptr<TermDocs> SegmentReader::Docs(const Term& term) {
+    TermInfo ti = term_infos_->Get(term);
+    if (ti.doc_freq == 0) return nullptr;
+    auto frq = dir_.OpenInput(segment_ + ".frq");
+    return std::make_unique<SegmentTermDocs>(std::move(frq), ti.freq_pointer, ti.doc_freq);
+}
+
+std::unique_ptr<TermPositions> SegmentReader::Positions(const Term& term) {
+    TermInfo ti = term_infos_->Get(term);
+    if (ti.doc_freq == 0) return nullptr;
+    auto frq = dir_.OpenInput(segment_ + ".frq");
+    auto prx = dir_.OpenInput(segment_ + ".prx");
+    return std::make_unique<SegmentTermPositions>(
+        std::move(frq), std::move(prx), ti.freq_pointer, ti.prox_pointer, ti.doc_freq);
+}
+
+int SegmentReader::DocFreq(const Term& term) {
+    TermInfo ti = term_infos_->Get(term);
+    return ti.doc_freq;
+}
+
+void SegmentReader::Close() {
+    if (term_infos_) {
+        term_infos_->Close();
+        term_infos_.reset();
+    }
+}
+
+}  // namespace index
+}  // namespace minilucene

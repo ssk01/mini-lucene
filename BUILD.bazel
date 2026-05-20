@@ -148,19 +148,27 @@ cc_library(
         "src/index/field_info.cpp",
         "src/index/field_infos.cpp",
         "src/index/term_infos_writer.cpp",
+        "src/index/term_infos_reader.cpp",
         "src/index/document_writer.cpp",
         "src/index/index_writer.cpp",
         "src/index/segment_infos.cpp",
+        "src/index/segment_reader.cpp",
     ],
     hdrs = [
         "include/minilucene/index/document_writer.h",
         "include/minilucene/index/field_info.h",
         "include/minilucene/index/field_infos.h",
+        "include/minilucene/index/index_reader.h",
         "include/minilucene/index/index_writer.h",
         "include/minilucene/index/segment_infos.h",
+        "include/minilucene/index/segment_reader.h",
         "include/minilucene/index/term.h",
+        "include/minilucene/index/term_docs.h",
+        "include/minilucene/index/term_enum.h",
         "include/minilucene/index/term_info.h",
+        "include/minilucene/index/term_infos_reader.h",
         "include/minilucene/index/term_infos_writer.h",
+        "include/minilucene/index/term_positions.h",
     ],
     strip_include_prefix = "include",
     deps = [
@@ -174,6 +182,15 @@ cc_library(
 cc_test(
     name = "document_writer_test",
     srcs = ["tests/unit/index/document_writer_test.cpp"],
+    deps = [
+        ":index",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "write_read_roundtrip_test",
+    srcs = ["tests/integration/write_read_roundtrip_test.cpp"],
     deps = [
         ":index",
         "@googletest//:gtest_main",
