@@ -39,7 +39,7 @@ TEST(WriteRead, EnumerateAllTerms) {
 
     SegmentReader r(dir, "_0");
     auto terms = CollectAllTerms(r);
-    std::vector<std::string> expected = {"alpha", "beta", "gamma"};
+    std::vector<std::string> expected = {"alpha", "beta", "delta", "gamma"};
     EXPECT_EQ(terms, expected);
     r.Close();
 }

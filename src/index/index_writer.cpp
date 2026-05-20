@@ -9,21 +9,27 @@ namespace minilucene {
 namespace index {
 
 IndexWriter::IndexWriter(store::Directory& dir, std::unique_ptr<analysis::Analyzer> analyzer)
-    : dir_(dir), analyzer_(std::move(analyzer)) {}
+    : dir_(dir), analyzer_(std::move(analyzer)) {
+    writer_ = std::make_unique<DocumentWriter>(dir_, *analyzer_);
+}
 
 IndexWriter::~IndexWriter() {
     Close();
 }
 
 void IndexWriter::AddDocument(const document::Document& doc) {
-    std::string seg_name = "_" + std::to_string(segment_counter_++);
-    DocumentWriter writer(dir_, *analyzer_);
-    writer.AddDocument(seg_name, doc);
-    segment_infos_.Add(seg_name, 1);
-    segment_infos_.Write(dir_);
+    writer_->AddDocument(doc);
 }
 
-void IndexWriter::Close() {}
+void IndexWriter::Close() {
+    if (!closed_) {
+        std::string seg_name = "_" + std::to_string(segment_counter_++);
+        writer_->Flush(seg_name);
+        segment_infos_.Add(seg_name, 1);
+        segment_infos_.Write(dir_);
+        closed_ = true;
+    }
+}
 
 }  // namespace index
 }  // namespace minilucene

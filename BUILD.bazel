@@ -197,6 +197,36 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "search",
+    srcs = [
+        "src/search/term_query.cpp",
+        "src/search/index_searcher.cpp",
+    ],
+    hdrs = [
+        "include/minilucene/search/index_searcher.h",
+        "include/minilucene/search/scorer.h",
+        "include/minilucene/search/similarity.h",
+        "include/minilucene/search/term_query.h",
+        "include/minilucene/search/top_docs.h",
+    ],
+    strip_include_prefix = "include",
+    deps = [
+        ":index",
+        ":util",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_test(
+    name = "search_termquery_test",
+    srcs = ["tests/integration/search_termquery_test.cpp"],
+    deps = [
+        ":search",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "p1_demo",
     srcs = ["examples/p1_demo.cpp"],

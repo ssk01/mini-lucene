@@ -20,6 +20,8 @@ class Analyzer;
 
 namespace index {
 
+class DocumentWriter;
+
 class IndexWriter {
 public:
     IndexWriter(store::Directory& dir, std::unique_ptr<analysis::Analyzer> analyzer);
@@ -31,8 +33,10 @@ public:
 private:
     store::Directory& dir_;
     std::unique_ptr<analysis::Analyzer> analyzer_;
+    std::unique_ptr<DocumentWriter> writer_;
     SegmentInfos segment_infos_;
     int segment_counter_ = 0;
+    bool closed_ = false;
 };
 
 }  // namespace index

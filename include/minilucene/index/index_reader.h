@@ -19,6 +19,7 @@ public:
     virtual std::unique_ptr<TermPositions> Positions(const Term& term) = 0;
     virtual int DocFreq(const Term& term) = 0;
     virtual int NumDocs() const = 0;
+    virtual float Norm(int doc, int field_number) = 0;
     virtual void Close() = 0;
 };
 

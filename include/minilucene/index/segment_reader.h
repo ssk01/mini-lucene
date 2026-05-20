@@ -29,6 +29,7 @@ public:
     std::unique_ptr<TermPositions> Positions(const Term& term) override;
     int DocFreq(const Term& term) override;
     int NumDocs() const override { return num_docs_; }
+    float Norm(int doc, int field_number) override;
     void Close() override;
 
 private:
@@ -36,6 +37,7 @@ private:
     std::string segment_;
     std::unique_ptr<FieldInfos> field_infos_;
     std::unique_ptr<TermInfosReader> term_infos_;
+    std::unique_ptr<store::IndexInput> nrm_;
     int num_docs_ = 0;
 };
 

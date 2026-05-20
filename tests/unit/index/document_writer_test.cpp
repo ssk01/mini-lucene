@@ -21,7 +21,8 @@ TEST(DocumentWriter, SingleDocSegmentFilesCreated) {
     doc.Add(document::Field::Text("body", "the quick brown fox"));
 
     DocumentWriter writer(dir, analyzer);
-    writer.AddDocument("_0", doc);
+    writer.AddDocument(doc);
+    writer.Flush("_0");
 
     for (auto suffix : {".fnm", ".tis", ".tii", ".frq", ".prx", ".nrm"}) {
         EXPECT_TRUE(dir.FileExists(std::string("_0") + suffix));
@@ -35,7 +36,8 @@ TEST(DocumentWriter, TermsSortedAlphabetically) {
     doc.Add(document::Field::Text("body", "quick brown fox"));
 
     DocumentWriter writer(dir, analyzer);
-    writer.AddDocument("_0", doc);
+    writer.AddDocument(doc);
+    writer.Flush("_0");
 
     auto in = dir.OpenInput("_0.tis");
     std::vector<std::string> terms;
@@ -69,7 +71,8 @@ TEST(DocumentWriter, FrequencyEncodedCorrectly) {
     doc.Add(document::Field::Text("body", "fox fox fox cat"));
 
     DocumentWriter writer(dir, analyzer);
-    writer.AddDocument("_0", doc);
+    writer.AddDocument(doc);
+    writer.Flush("_0");
 
     std::map<std::string, int> freqs;
     auto in = dir.OpenInput("_0.tis");
@@ -100,7 +103,8 @@ TEST(DocumentWriter, PositionsRecorded) {
     doc.Add(document::Field::Text("body", "a b a b a"));
 
     DocumentWriter writer(dir, analyzer);
-    writer.AddDocument("_0", doc);
+    writer.AddDocument(doc);
+    writer.Flush("_0");
 
     auto tis = dir.OpenInput("_0.tis");
     int64_t a_prox_ptr = -1;
@@ -162,7 +166,8 @@ TEST(DocumentWriter, TiiSamplesEvery128Terms) {
     doc.Add(document::Field::Text("body", many_words));
 
     DocumentWriter writer(dir, analyzer);
-    writer.AddDocument("_0", doc);
+    writer.AddDocument(doc);
+    writer.Flush("_0");
 
     auto tii = dir.OpenInput("_0.tii");
     int count = 0;

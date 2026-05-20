@@ -112,14 +112,20 @@ SegmentReader::SegmentReader(store::Directory& dir, const std::string& segment)
     field_infos_ = FieldInfos::Read(dir_, segment_);
     term_infos_ = std::make_unique<TermInfosReader>(dir_, segment_);
     if (dir_.FileExists(segment_ + ".nrm")) {
-        auto nrm = dir_.OpenInput(segment_ + ".nrm");
+        nrm_ = dir_.OpenInput(segment_ + ".nrm");
         num_docs_ = 1;
-        nrm->Close();
     }
 }
 
 SegmentReader::~SegmentReader() {
     Close();
+}
+
+float SegmentReader::Norm(int doc, int field_number) {
+    if (!nrm_) return 1.0f;
+    nrm_->Seek(static_cast<int64_t>(doc) * field_infos_->Size() + field_number);
+    uint8_t b = nrm_->ReadByte();
+    return static_cast<float>(b) / 255.0f;
 }
 
 std::unique_ptr<TermEnum> SegmentReader::Terms() {
@@ -149,6 +155,10 @@ int SegmentReader::DocFreq(const Term& term) {
 }
 
 void SegmentReader::Close() {
+    if (nrm_) {
+        nrm_->Close();
+        nrm_.reset();
+    }
     if (term_infos_) {
         term_infos_->Close();
         term_infos_.reset();
