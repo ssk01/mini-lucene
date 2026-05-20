@@ -56,7 +56,11 @@ public:
             bool has_must_now = HasActive(must_);
             if (has_must_now && !AllAt(must_, target)) continue;
 
-            if (MustNotMatch(target)) continue;
+            if (MustNotMatch(target)) {
+                AdvancePast(must_, target);
+                AdvancePast(should_, target);
+                continue;
+            }
 
             AdvanceAllTo(should_, target);
             overlap_ = CountActive(must_) + CountAt(should_, target);
