@@ -86,8 +86,12 @@ private:
         all_pos_.resize(tps_.size());
         for (size_t i = 0; i < tps_.size(); ++i) {
             all_pos_[i].clear();
-            for (int j = 0; j < tps_[i]->Freq(); ++j) {
-                all_pos_[i].push_back(tps_[i]->NextPosition());
+            try {
+                for (int j = 0; j < tps_[i]->Freq(); ++j) {
+                    all_pos_[i].push_back(tps_[i]->NextPosition());
+                }
+            } catch (...) {
+                break;
             }
         }
     }

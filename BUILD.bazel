@@ -296,10 +296,85 @@ cc_test(
 )
 
 cc_test(
+    name = "exact_score_test",
+    srcs = ["tests/integration/exact_score_test.cpp"],
+    deps = [":search",
+            "@googletest//:gtest_main"],
+)
+
+cc_test(
+    name = "cranfield_test",
+    srcs = ["tests/integration/cranfield_test.cpp"],
+    data = ["tests/data/cranfield/cran.all.1400", "tests/data/cranfield/cranqrel"],
+    deps = [":search",
+            "@googletest//:gtest_main"],
+)
+
+cc_test(
+    name = "cranfield_qrels_test",
+    srcs = ["tests/integration/cranfield_qrels_test.cpp"],
+    data = ["tests/data/cranfield/cran.all.1400", "tests/data/cranfield/cran.qry", "tests/data/cranfield/cranqrel"],
+    deps = [":search",
+            "@googletest//:gtest_main"],
+    size = "large",
+)
+
+cc_test(
+    name = "stress_test",
+    srcs = ["tests/integration/stress_test.cpp"],
+    deps = [":search",
+            "@googletest//:gtest_main"],
+    size = "large",
+)
+
+cc_test(
+    name = "cranfield_ground_truth_test",
+    srcs = ["tests/integration/cranfield_ground_truth_test.cpp"],
+    data = [
+        "tests/data/cranfield/cran.all.1400",
+        "tests/data/cranfield/cran_ground_truth.txt",
+    ],
+    deps = [":search",
+            "@googletest//:gtest_main"],
+    size = "large",
+)
+
+cc_test(
+    name = "benchmark_test",
+    srcs = ["tests/integration/benchmark_test.cpp"],
+    data = ["tests/data/cranfield/cran.all.1400"],
+    deps = [":search",
+            "@googletest//:gtest_main"],
+    size = "large",
+)
+
+cc_test(
+    name = "regression_test",
+    srcs = ["tests/integration/regression_test.cpp"],
+    deps = [":search",
+            "@googletest//:gtest_main"],
+)
+
+cc_test(
+    name = "persistence_test",
+    srcs = ["tests/integration/persistence_test.cpp"],
+    deps = [":index", ":search", ":store", ":document",
+            "@googletest//:gtest_main"],
+)
+
+cc_test(
+    name = "es_ground_truth_test",
+    srcs = ["tests/integration/es_ground_truth_test.cpp"],
+    deps = [":search",
+            "@googletest//:gtest_main"],
+)
+
+cc_test(
     name = "missing_features_test",
     srcs = ["tests/integration/missing_features_test.cpp"],
     deps = [":search", ":index", ":analysis", ":store", ":document",
             "@googletest//:gtest_main"],
+    tags = ["manual"],
 )
 
 cc_test(
