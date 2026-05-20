@@ -33,6 +33,17 @@ public:
     }
 
     bool Next() override {
+        if (current_doc_ >= 0) {
+            AdvancePast(must_, current_doc_);
+            for (auto& s : should_) {
+                if (s && s->Doc() <= current_doc_) {
+                    while (s->Doc() <= current_doc_) {
+                        if (!s->Next()) { s.reset(); break; }
+                    }
+                }
+            }
+            current_doc_ = -1;
+        }
         while (true) {
             int target = FindTarget();
             if (target < 0) return false;
