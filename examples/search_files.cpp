@@ -11,25 +11,18 @@
 #include <string>
 
 int main(int argc, char* argv[]) {
-    std::string index_path = "index";
-    if (argc > 1) index_path = argv[1];
-
     try {
         auto analyzer = std::make_unique<minilucene::analysis::StopAnalyzer>();
-        minilucene::search::IndexSearcher searcher(index_path);
+        minilucene::search::IndexSearcher searcher("index");
 
         std::string line;
         while (true) {
             std::cout << "Query: ";
             if (!std::getline(std::cin, line)) break;
-            if (line.empty()) continue;
 
-            minilucene::query_parser::QueryParser parser("contents", line);
-            auto query = parser.Parse();
-            if (!query) {
-                std::cout << "no query parsed" << std::endl;
-                continue;
-            }
+            auto query = minilucene::query_parser::QueryParser::Parse(
+                line, "contents", *analyzer);
+            std::cout << "Searching for: " << query->ToString() << std::endl;
 
             auto hits = searcher.Search(*query);
             if (!hits) {
@@ -37,7 +30,6 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            std::cout << "Searching for: " << query->ToString() << std::endl;
             std::cout << hits->Length() << " total matching documents" << std::endl;
 
             const int HITS_PER_PAGE = 10;

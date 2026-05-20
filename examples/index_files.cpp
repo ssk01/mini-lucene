@@ -1,14 +1,11 @@
 #include "minilucene/analysis/stop_analyzer.h"
+#include "minilucene/document/date_field.h"
 #include "minilucene/document/document.h"
 #include "minilucene/document/field.h"
-#include "minilucene/document/field.h"
 #include "minilucene/index/index_writer.h"
-#include "minilucene/index/segment_reader.h"
 #include "minilucene/store/fs_directory.h"
-#include "minilucene/store/index_input.h"
 
 #include <chrono>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -22,24 +19,25 @@ void IndexDocs(minilucene::index::IndexWriter& writer, const fs::path& path) {
             IndexDocs(writer, entry.path());
         }
     } else {
-        auto ext = path.extension().string();
-        if (ext != ".txt" && ext != ".md" && ext != ".cpp" && ext != ".h") return;
-
         std::cout << "adding " << path.string() << std::endl;
 
         minilucene::document::Document doc;
+
+        // contents first → field 0 (so QueryParser's Term(0, x) matches)
         std::ifstream file(path);
         if (file) {
             doc.Add(minilucene::document::Field::Text("contents", file));
         }
 
+        // path: stored, tokenized
         doc.Add(minilucene::document::Field::Text("path", path.string()));
 
+        // modified: stored, indexed, NOT tokenized — use DateField encoding
         auto ft = fs::last_write_time(path);
         auto sft = std::chrono::duration_cast<std::chrono::seconds>(
             ft.time_since_epoch()).count();
         doc.Add(minilucene::document::Field::Keyword("modified",
-            std::to_string(sft)));
+            minilucene::document::DateField::TimeToString(sft)));
 
         writer.AddDocument(doc);
     }
@@ -47,22 +45,19 @@ void IndexDocs(minilucene::index::IndexWriter& writer, const fs::path& path) {
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <index_dir> <docs_dir>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <docs_dir>" << std::endl;
         return 1;
     }
-
-    std::string index_path = argv[1];
-    std::string docs_path = argv[2];
 
     try {
         auto start = std::chrono::steady_clock::now();
 
-        minilucene::store::FSDirectory dir(index_path);
+        minilucene::store::FSDirectory dir("index");
         auto analyzer = std::make_unique<minilucene::analysis::StopAnalyzer>();
         minilucene::index::IndexWriter writer(dir, std::move(analyzer));
         writer.mergeFactor = 20;
 
-        IndexDocs(writer, fs::path(docs_path));
+        IndexDocs(writer, fs::path(argv[1]));
 
         writer.Optimize();
         writer.Close();
@@ -72,9 +67,8 @@ int main(int argc, char* argv[]) {
         std::cout << ms << " total milliseconds" << std::endl;
 
     } catch (const std::exception& e) {
-        std::cerr << "caught a " << typeid(e).name()
+        std::cout << " caught a " << typeid(e).name()
                   << "\n with message: " << e.what() << std::endl;
-        return 1;
     }
 
     return 0;

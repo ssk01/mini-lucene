@@ -2,6 +2,7 @@
 #include "minilucene/index/index_reader.h"
 #include "minilucene/index/segment_infos.h"
 #include "minilucene/index/segment_reader.h"
+#include "minilucene/index/segments_reader.h"
 #include "minilucene/search/hits.h"
 #include "minilucene/search/query.h"
 #include "minilucene/search/scorer.h"
@@ -31,16 +32,22 @@ IndexSearcher::IndexSearcher(const std::string& path) {
     owned_dir_ = std::make_unique<store::FSDirectory>(path);
     auto seg_infos = index::SegmentInfos::Read(*owned_dir_);
     if (seg_infos->Segments().empty()) return;
-    auto& seg_name = seg_infos->Segments()[0].name;
-    reader_ = new index::SegmentReader(*owned_dir_, seg_name);
+    if (seg_infos->Segments().size() == 1) {
+        reader_ = new index::SegmentReader(*owned_dir_, seg_infos->Segments()[0].name);
+    } else {
+        reader_ = new index::SegmentsReader(*owned_dir_);
+    }
     owns_reader_ = true;
 }
 
 IndexSearcher::IndexSearcher(store::Directory& dir) {
     auto seg_infos = index::SegmentInfos::Read(dir);
     if (seg_infos->Segments().empty()) return;
-    auto& seg_name = seg_infos->Segments()[0].name;
-    reader_ = new index::SegmentReader(dir, seg_name);
+    if (seg_infos->Segments().size() == 1) {
+        reader_ = new index::SegmentReader(dir, seg_infos->Segments()[0].name);
+    } else {
+        reader_ = new index::SegmentsReader(dir);
+    }
     owns_reader_ = true;
 }
 
