@@ -1,0 +1,36 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+
+cc_library(
+    name = "util",
+    srcs = ["src/util/bit_vector.cpp"],
+    hdrs = [
+        "include/minilucene/util/bit_vector.h",
+        "include/minilucene/util/priority_queue.h",
+    ],
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+)
+
+cc_test(
+    name = "bit_vector_test",
+    srcs = ["tests/unit/util/bit_vector_test.cpp"],
+    deps = [
+        ":util",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "priority_queue_test",
+    srcs = ["tests/unit/util/priority_queue_test.cpp"],
+    deps = [
+        ":util",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_binary(
+    name = "p1_demo",
+    srcs = ["examples/p1_demo.cpp"],
+    deps = [":util"],
+)

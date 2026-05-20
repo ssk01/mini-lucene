@@ -1,0 +1,3 @@
+build --cxxopt=-std=c++17
+build --cxxopt=-Wall --cxxopt=-Wextra --cxxopt=-Wpedantic
+test --test_output=errors
