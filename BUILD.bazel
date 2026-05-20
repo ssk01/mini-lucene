@@ -262,6 +262,7 @@ cc_library(
         "include/minilucene/search/fuzzy_query.h",
         "include/minilucene/search/fuzzy_term_enum.h",
         "include/minilucene/search/hit_collector.h",
+        "include/minilucene/search/hit_queue.h",
         "include/minilucene/search/hits.h",
         "include/minilucene/search/index_searcher.h",
         "include/minilucene/search/multi_searcher.h",

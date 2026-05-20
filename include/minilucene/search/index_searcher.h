@@ -24,9 +24,10 @@ public:
     IndexSearcher(index::IndexReader& reader);
     ~IndexSearcher() override;
 
-    std::unique_ptr<Hits> Search(const Query& query) override;
     TopDocs Search(const Query& query, int top_k) const;
+    std::unique_ptr<Hits> Search(const Query& query) override;
     void Close() override;
+    int MaxDoc() const;
 
 private:
     std::unique_ptr<store::Directory> owned_dir_;

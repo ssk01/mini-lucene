@@ -19,7 +19,7 @@ public:
     std::string ToString() const override;
 
 protected:
-    virtual FilteredTermEnum* GetEnum(index::IndexReader& reader) = 0;
+    virtual FilteredTermEnum* GetEnum(index::IndexReader& reader) const = 0;
     index::Term term_;
 };
 

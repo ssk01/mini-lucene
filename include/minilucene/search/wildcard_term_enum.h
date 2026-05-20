@@ -13,8 +13,8 @@ protected:
     bool TermMatch(const index::Term& term) override;
 
 private:
-    bool MatchText(const std::string& text) const;
     std::string pattern_;
+    int field_number_;
 };
 
 }  // namespace search

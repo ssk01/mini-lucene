@@ -121,5 +121,9 @@ void IndexSearcher::Close() {
     owned_dir_.reset();
 }
 
+int IndexSearcher::MaxDoc() const {
+    return reader_->MaxDoc();
+}
+
 }  // namespace search
 }  // namespace minilucene

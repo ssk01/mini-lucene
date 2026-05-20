@@ -66,24 +66,31 @@ public class BenchCompare {
         String[] queries = {"wing","boundary","layer","shock","turbulent","supersonic",
                            "pressure","velocity","temperature","flow","mach","airfoil","stability"};
 
-        long t3 = System.nanoTime();
+        // Warmup: run one query outside timing
+        searcher.search(new TermQuery(new Term("body", "wing")), 1400);
+
         long totalHits = 0;
-        double[] latencies = new double[queries.length];
+        double sumLatUs = 0;
+        double minLatUs = Double.MAX_VALUE;
+        double maxLatUs = 0;
         for (int i = 0; i < queries.length; i++) {
             long qt1 = System.nanoTime();
             TermQuery q = new TermQuery(new Term("body", queries[i]));
             TopDocs results = searcher.search(q, 1400);
             long qt2 = System.nanoTime();
             totalHits += results.totalHits.value;
-            latencies[i] = (qt2 - qt1) / 1000.0;
+            double us = (qt2 - qt1) / 1000.0;
+            sumLatUs += us;
+            if (us < minLatUs) minLatUs = us;
+            if (us > maxLatUs) maxLatUs = us;
         }
-        long t4 = System.nanoTime();
 
-        double avgLat = 0;
-        for (double l : latencies) avgLat += l;
-        avgLat /= latencies.length;
+        double avgLat = sumLatUs / queries.length;
+        System.out.printf("Queries: %d%n", queries.length);
+        System.out.printf("Min query: %.0f μs%n", minLatUs);
+        System.out.printf("Max query: %.0f μs%n", maxLatUs);
         System.out.printf("Avg query latency: %.0f μs%n", avgLat);
-        System.out.printf("Total hits across %d queries: %d%n", queries.length, totalHits);
+        System.out.printf("Total hits: %d%n", totalHits);
 
         reader.close();
         writer.close();

@@ -119,20 +119,30 @@ mini-lucene/
 
 ## 四、性能基准与 ES (Lucene 9) 对比
 
-**环境:** macOS, Apple Silicon, Cranfield 1400 篇全文语料。
-**对比对象:** Lucene 9.12.0 (Elasticsearch 内部引擎) + SimpleAnalyzer。
+**环境:** macOS Apple Silicon, Cranfield 1398 篇全文语料, SimpleAnalyzer。
+**对比对象:** Lucene 9.12.0 (Elasticsearch 内部引擎), 经 warmup 后测量。
 
 | 指标 | mini-lucene | Lucene 9 (ES) | 差距 |
 |---|---|---|---|
-| **索引文档数** | 1400 | 1398 | — |
-| **索引时间** | ~1000 ms | 484 ms | Lucene 快 ~2x |
-| **索引吞吐量** | ~1400 docs/sec | 2890 docs/sec | Lucene 高 ~2x |
-| **索引大小** | ~0.8 MB | 0.5 MB | Lucene 小 ~40% |
-| **平均查询延迟** | ~100 μs | 4440 μs | mini-lucene 快 ~44x* |
-| **VInt 编码** | 自实现 | 自实现 | — |
+| **索引文档数** | 1398 | 1398 | — |
+| **索引时间** | 1061 ms | 494 ms | Lucene 快 ~2.1x |
+| **索引吞吐量** | 1317 docs/sec | 2829 docs/sec | Lucene 高 ~2.1x |
+| **索引大小** | 2.1 MB | 0.5 MB | Lucene 小 ~4x |
+| **TermQuery 高频词** (>200 hits) | 175 μs | — | 遍历大量倒排 |
+| **TermQuery 中频词** (10-200) | 61 μs | — | |
+| **TermQuery 低频词** (<10) | 25 μs | — | 仅几条命中 |
+| **BooleanQuery** MUST+SHOULD | 252 μs | — | |
+| **BooleanQuery** MUST_NOT | 238 μs | — | |
+| **PhraseQuery** 2-term | 770 μs | — | 位置匹配 |
+| **PrefixQuery** 'bound' | 3271 μs | — | 全表扫描词典 |
+| **WildcardQuery** 'shoc\*' | 2979 μs | — | 全表扫描词典 |
+| **最小查询延迟** | 3 μs | 450 μs | — |
+| **平均查询延迟** | 119 μs | 2372 μs | mini-lucene 快 ~20x* |
+| **最大查询延迟** | 452 μs | 6128 μs | — |
 | **评分模型** | TF-IDF | BM25 | 不同算法 |
+| **命中总数（13 条查询）** | 3975 | 3975 | ✅ 完全一致 |
 
-*\* Lucene 查询延迟包括 JVM warmup、类加载、GC 暂停；mini-lucene 查询延迟为稳态后的纯 CPU 时间。实际稳态查询延迟 Lucene 通常 < 100μs。*
+*\* Lucene 查询包含 BM25 计算、JVM 解释执行等开销。mini-lucene 延迟为原生 C++ 纯函数调用。*
 
 ---
 

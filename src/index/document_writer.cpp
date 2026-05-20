@@ -46,6 +46,18 @@ void DocumentWriter::AddDocument(const document::Document& doc) {
         if (!field.IsIndexed()) continue;
         int field_num = field_infos_->FieldNumber(field.Name());
 
+        if (!field.IsTokenized()) {
+            Term term(field_num, field.Value());
+            auto& doc_postings = postings_[term];
+            if (doc_postings.size() <= static_cast<size_t>(doc_count_)) {
+                doc_postings.resize(doc_count_ + 1);
+            }
+            auto& dp = doc_postings[doc_count_];
+            dp.freq++;
+            dp.positions.push_back(0);
+            continue;
+        }
+
         std::istringstream stream(field.Value());
         auto ts = analyzer_.CreateTokenStream(field.Name(), stream);
         analysis::Token token;
