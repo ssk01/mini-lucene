@@ -1,0 +1,9 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+cc_test(
+    name = "phrase_debug",
+    srcs = ["tests/unit/search/phrase_query_test.cpp"],
+    deps = [":search", "@googletest//:gtest_main"],
+    copts = ["-O0", "-g", "-fsanitize=address", "-fno-omit-frame-pointer"],
+    linkopts = ["-fsanitize=address"],
+)

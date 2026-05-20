@@ -203,11 +203,13 @@ cc_library(
         "src/search/term_query.cpp",
         "src/search/index_searcher.cpp",
         "src/search/boolean_query.cpp",
+        "src/search/phrase_query.cpp",
     ],
     hdrs = [
         "include/minilucene/search/boolean_clause.h",
         "include/minilucene/search/boolean_query.h",
         "include/minilucene/search/index_searcher.h",
+        "include/minilucene/search/phrase_query.h",
         "include/minilucene/search/query.h",
         "include/minilucene/search/scorer.h",
         "include/minilucene/search/similarity.h",
@@ -232,6 +234,15 @@ cc_test(
 )
 
 cc_test(
+    name = "phrase_query_test",
+    srcs = ["tests/unit/search/phrase_query_test.cpp"],
+    deps = [
+        ":search",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "boolean_query_test",
     srcs = ["tests/unit/search/boolean_query_test.cpp"],
     deps = [
@@ -244,4 +255,10 @@ cc_binary(
     name = "p1_demo",
     srcs = ["examples/p1_demo.cpp"],
     deps = [":util"],
+)
+
+cc_binary(
+    name = "phrase_demo",
+    srcs = ["examples/phrase_demo.cpp"],
+    deps = [":search"],
 )
