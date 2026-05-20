@@ -1,0 +1,11 @@
+The quick brown fox jumps over the lazy dog
+Apache Lucene is a free text search engine library
+Hello World from mini-lucene C++ full-text search engine
+The fox and the hound were running in the forest
+Running quickly is good for your health
+The quickest way to jump over the lazy fox
+Generalization of the stemming algorithm is complex
+Consignment of goods arrived at the connection terminal
+Connected devices are hopping on the network
+Troubles with the troubleshooting module
+	
