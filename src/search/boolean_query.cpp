@@ -17,7 +17,8 @@ public:
                   std::vector<std::unique_ptr<Scorer>> should,
                   std::vector<std::unique_ptr<Scorer>> must_not,
                   int overlap_max)
-        : must_(std::move(must))
+        : has_must_(!must.empty())
+        , must_(std::move(must))
         , should_(std::move(should))
         , must_not_(std::move(must_not))
         , overlap_max_(overlap_max) {
@@ -45,13 +46,15 @@ public:
             current_doc_ = -1;
         }
         while (true) {
+            if (has_must_ && !HasActive(must_)) return false;
+
             int target = FindTarget();
             if (target < 0) return false;
 
             AdvanceAllTo(must_, target);
 
-            bool has_must = HasActive(must_);
-            if (has_must && !AllAt(must_, target)) continue;
+            bool has_must_now = HasActive(must_);
+            if (has_must_now && !AllAt(must_, target)) continue;
 
             if (MustNotMatch(target)) continue;
 
@@ -149,6 +152,7 @@ private:
         }
     }
 
+    bool has_must_;
     std::vector<std::unique_ptr<Scorer>> must_;
     std::vector<std::unique_ptr<Scorer>> should_;
     std::vector<std::unique_ptr<Scorer>> must_not_;
