@@ -14,9 +14,7 @@ public:
     TermScorer(std::unique_ptr<index::TermDocs> docs, float idf, float query_weight,
                index::IndexReader& reader, int field_number)
         : docs_(std::move(docs)), idf_(idf), query_weight_(query_weight)
-        , reader_(reader), field_number_(field_number) {
-        docs_->Next();
-    }
+        , reader_(reader), field_number_(field_number) {}
 
     bool Next() override { return docs_->Next(); }
     int Doc() const override { return docs_->Doc(); }

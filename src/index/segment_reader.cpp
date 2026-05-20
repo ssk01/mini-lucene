@@ -113,7 +113,9 @@ SegmentReader::SegmentReader(store::Directory& dir, const std::string& segment)
     term_infos_ = std::make_unique<TermInfosReader>(dir_, segment_);
     if (dir_.FileExists(segment_ + ".nrm")) {
         nrm_ = dir_.OpenInput(segment_ + ".nrm");
-        num_docs_ = 1;
+        if (field_infos_->Size() > 0) {
+            num_docs_ = static_cast<int>(nrm_->Length() / field_infos_->Size());
+        }
     }
 }
 
