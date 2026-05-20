@@ -5,6 +5,8 @@
 #include "minilucene/document/document.h"
 #include "minilucene/store/directory.h"
 #include "minilucene/store/index_input.h"
+#include "minilucene/store/index_output.h"
+#include "minilucene/util/bit_vector.h"
 
 #include <stdexcept>
 
@@ -47,21 +49,30 @@ SegmentTermDocs::SegmentTermDocs(std::unique_ptr<store::IndexInput> frq,
     frq_->Seek(freq_pointer);
 }
 
+SegmentTermDocs::SegmentTermDocs(std::unique_ptr<store::IndexInput> frq,
+                                 int64_t freq_pointer, int doc_freq,
+                                 util::BitVector* deleted_docs)
+    : frq_(std::move(frq)), remaining_(doc_freq), deleted_docs_(deleted_docs) {
+    frq_->Seek(freq_pointer);
+}
+
 SegmentTermDocs::~SegmentTermDocs() {
     Close();
 }
 
 bool SegmentTermDocs::Next() {
-    if (remaining_ <= 0) return false;
-    try {
-        int delta = frq_->ReadVInt();
-        doc_ += delta;
-        freq_ = frq_->ReadVInt();
-        --remaining_;
-        return true;
-    } catch (...) {
-        return false;
+    while (remaining_ > 0) {
+        try {
+            int delta = frq_->ReadVInt();
+            doc_ += delta;
+            freq_ = frq_->ReadVInt();
+            --remaining_;
+            if (!deleted_docs_ || !deleted_docs_->Get(doc_)) return true;
+        } catch (...) {
+            return false;
+        }
     }
+    return false;
 }
 
 void SegmentTermDocs::Close() {
@@ -81,22 +92,40 @@ SegmentTermPositions::SegmentTermPositions(std::unique_ptr<store::IndexInput> fr
     prx_->Seek(prox_pointer);
 }
 
+SegmentTermPositions::SegmentTermPositions(std::unique_ptr<store::IndexInput> frq,
+                                           std::unique_ptr<store::IndexInput> prx,
+                                           int64_t freq_pointer, int64_t prox_pointer,
+                                           int doc_freq, util::BitVector* deleted_docs)
+    : frq_(std::move(frq)), prx_(std::move(prx))
+    , deleted_docs_(deleted_docs)
+    , remaining_(doc_freq), remaining_positions_(0) {
+    frq_->Seek(freq_pointer);
+    prx_->Seek(prox_pointer);
+}
+
 SegmentTermPositions::~SegmentTermPositions() {
     Close();
 }
 
 bool SegmentTermPositions::Next() {
-    if (remaining_ <= 0) return false;
-    try {
-        int delta = frq_->ReadVInt();
-        doc_ += delta;
-        freq_ = frq_->ReadVInt();
-        --remaining_;
-        remaining_positions_ = freq_;
-        return true;
-    } catch (...) {
-        return false;
+    while (remaining_ > 0) {
+        try {
+            int delta = frq_->ReadVInt();
+            doc_ += delta;
+            freq_ = frq_->ReadVInt();
+            --remaining_;
+            if (!deleted_docs_ || !deleted_docs_->Get(doc_)) {
+                remaining_positions_ = freq_;
+                // prx position for this doc is at the right offset already
+                return true;
+            }
+            // Skip positions for deleted doc
+            for (int i = 0; i < freq_; ++i) prx_->ReadVInt();
+        } catch (...) {
+            return false;
+        }
     }
+    return false;
 }
 
 int SegmentTermPositions::NextPosition() {
@@ -122,11 +151,28 @@ SegmentReader::SegmentReader(store::Directory& dir, const std::string& segment)
             num_docs_ = static_cast<int>(nrm_->Length() / field_infos_->Size());
         }
     }
+    if (dir_.FileExists(segment_ + ".del")) {
+        auto del_in = dir_.OpenInput(segment_ + ".del");
+        deleted_docs_ = util::BitVector::Read(*del_in);
+        del_in->Close();
+    }
 }
 
 std::unique_ptr<document::Document> SegmentReader::Document(int doc_id) {
     if (!fields_reader_) return nullptr;
     return fields_reader_->Document(doc_id);
+}
+
+void SegmentReader::Delete(int doc_id) {
+    if (!deleted_docs_) {
+        deleted_docs_ = std::make_unique<util::BitVector>(num_docs_);
+    }
+    deleted_docs_->Set(doc_id);
+}
+
+int SegmentReader::NumDocs() const {
+    if (deleted_docs_) return num_docs_ - deleted_docs_->Count();
+    return num_docs_;
 }
 
 SegmentReader::~SegmentReader() {
@@ -149,7 +195,8 @@ std::unique_ptr<TermDocs> SegmentReader::Docs(const Term& term) {
     TermInfo ti = term_infos_->Get(term);
     if (ti.doc_freq == 0) return nullptr;
     auto frq = dir_.OpenInput(segment_ + ".frq");
-    return std::make_unique<SegmentTermDocs>(std::move(frq), ti.freq_pointer, ti.doc_freq);
+    return std::make_unique<SegmentTermDocs>(std::move(frq), ti.freq_pointer, ti.doc_freq,
+                                             deleted_docs_.get());
 }
 
 std::unique_ptr<TermPositions> SegmentReader::Positions(const Term& term) {
@@ -158,7 +205,8 @@ std::unique_ptr<TermPositions> SegmentReader::Positions(const Term& term) {
     auto frq = dir_.OpenInput(segment_ + ".frq");
     auto prx = dir_.OpenInput(segment_ + ".prx");
     return std::make_unique<SegmentTermPositions>(
-        std::move(frq), std::move(prx), ti.freq_pointer, ti.prox_pointer, ti.doc_freq);
+        std::move(frq), std::move(prx), ti.freq_pointer, ti.prox_pointer, ti.doc_freq,
+        deleted_docs_.get());
 }
 
 int SegmentReader::DocFreq(const Term& term) {
@@ -167,6 +215,11 @@ int SegmentReader::DocFreq(const Term& term) {
 }
 
 void SegmentReader::Close() {
+    if (deleted_docs_ && deleted_docs_->Count() > 0) {
+        auto del_out = dir_.CreateOutput(segment_ + ".del");
+        deleted_docs_->Write(*del_out);
+        del_out->Close();
+    }
     if (nrm_) {
         nrm_->Close();
         nrm_.reset();

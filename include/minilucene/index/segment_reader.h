@@ -14,6 +14,10 @@ class Directory;
 class IndexInput;
 }
 
+namespace util {
+class BitVector;
+}
+
 namespace index {
 
 class FieldInfos;
@@ -29,9 +33,11 @@ public:
     std::unique_ptr<TermDocs> Docs(const Term& term) override;
     std::unique_ptr<TermPositions> Positions(const Term& term) override;
     int DocFreq(const Term& term) override;
-    int NumDocs() const override { return num_docs_; }
+    int NumDocs() const override;
     float Norm(int doc, int field_number) override;
     std::unique_ptr<document::Document> Document(int doc_id) override;
+    void Delete(int doc_id) override;
+    int MaxDoc() const override { return num_docs_; }
     void Close() override;
 
 private:
@@ -41,6 +47,7 @@ private:
     std::unique_ptr<FieldsReader> fields_reader_;
     std::unique_ptr<TermInfosReader> term_infos_;
     std::unique_ptr<store::IndexInput> nrm_;
+    std::unique_ptr<util::BitVector> deleted_docs_;
     int num_docs_ = 0;
 };
 
@@ -69,6 +76,8 @@ private:
 class SegmentTermDocs : public TermDocs {
 public:
     SegmentTermDocs(std::unique_ptr<store::IndexInput> frq, int64_t freq_pointer, int doc_freq);
+    SegmentTermDocs(std::unique_ptr<store::IndexInput> frq, int64_t freq_pointer, int doc_freq,
+                    util::BitVector* deleted_docs);
     ~SegmentTermDocs() override;
 
     bool Next() override;
@@ -78,6 +87,7 @@ public:
 
 protected:
     std::unique_ptr<store::IndexInput> frq_;
+    util::BitVector* deleted_docs_ = nullptr;
     int doc_ = 0;
     int freq_ = 0;
     int remaining_ = 0;
@@ -88,6 +98,10 @@ public:
     SegmentTermPositions(std::unique_ptr<store::IndexInput> frq,
                          std::unique_ptr<store::IndexInput> prx,
                          int64_t freq_pointer, int64_t prox_pointer, int doc_freq);
+    SegmentTermPositions(std::unique_ptr<store::IndexInput> frq,
+                         std::unique_ptr<store::IndexInput> prx,
+                         int64_t freq_pointer, int64_t prox_pointer, int doc_freq,
+                         util::BitVector* deleted_docs);
     ~SegmentTermPositions() override;
 
     bool Next() override;
@@ -99,6 +113,7 @@ public:
 private:
     std::unique_ptr<store::IndexInput> frq_;
     std::unique_ptr<store::IndexInput> prx_;
+    util::BitVector* deleted_docs_ = nullptr;
     int doc_ = 0;
     int freq_ = 0;
     int remaining_ = 0;

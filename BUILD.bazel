@@ -8,6 +8,7 @@ cc_library(
         "include/minilucene/util/priority_queue.h",
     ],
     strip_include_prefix = "include",
+    deps = [":store"],
     visibility = ["//visibility:public"],
 )
 
@@ -198,6 +199,7 @@ cc_library(
         ":analysis",
         ":document",
         ":store",
+        ":util",
     ],
     visibility = ["//visibility:public"],
 )

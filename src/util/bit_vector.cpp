@@ -1,4 +1,6 @@
 #include "minilucene/util/bit_vector.h"
+#include "minilucene/store/index_input.h"
+#include "minilucene/store/index_output.h"
 
 #include <stdexcept>
 
@@ -41,6 +43,29 @@ bool BitVector::Get(int bit) const {
 
 int BitVector::Count() const {
     return count_;
+}
+
+void BitVector::Write(store::IndexOutput& output) const {
+    output.WriteVInt(static_cast<int32_t>(size_));
+    int byte_count = static_cast<int>(bits_.size());
+    output.WriteVInt(byte_count);
+    for (int i = 0; i < byte_count; ++i) {
+        output.WriteByte(bits_[i]);
+    }
+}
+
+std::unique_ptr<BitVector> BitVector::Read(store::IndexInput& input) {
+    int size = input.ReadVInt();
+    int byte_count = input.ReadVInt();
+    auto bv = std::make_unique<BitVector>(size);
+    for (int i = 0; i < byte_count; ++i) {
+        bv->bits_[i] = input.ReadByte();
+    }
+    bv->count_ = 0;
+    for (size_t i = 0; i < bv->size_; ++i) {
+        if (bv->Get(static_cast<int>(i))) ++bv->count_;
+    }
+    return bv;
 }
 
 }  // namespace util
