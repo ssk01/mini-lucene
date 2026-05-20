@@ -50,7 +50,7 @@ public:
     ~SegmentTermEnum() override;
 
     bool Next() override;
-    Term Current() const override { return term_; }
+    const Term& Current() const override { return term_; }
     int DocFreq() const override { return doc_freq_; }
     void Close() override;
 

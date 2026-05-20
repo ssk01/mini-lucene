@@ -80,10 +80,12 @@ cc_library(
     srcs = [
         "src/document/field.cpp",
         "src/document/document.cpp",
+        "src/document/date_field.cpp",
     ],
     hdrs = [
-        "include/minilucene/document/field.h",
+        "include/minilucene/document/date_field.h",
         "include/minilucene/document/document.h",
+        "include/minilucene/document/field.h",
     ],
     strip_include_prefix = "include",
     visibility = ["//visibility:public"],
@@ -94,6 +96,7 @@ cc_library(
     srcs = [
         "src/analysis/token.cpp",
         "src/analysis/letter_tokenizer.cpp",
+        "src/analysis/lower_case_tokenizer.cpp",
         "src/analysis/lower_case_filter.cpp",
         "src/analysis/stop_filter.cpp",
         "src/analysis/simple_analyzer.cpp",
@@ -106,6 +109,7 @@ cc_library(
         "include/minilucene/analysis/token_filter.h",
         "include/minilucene/analysis/letter_tokenizer.h",
         "include/minilucene/analysis/lower_case_filter.h",
+        "include/minilucene/analysis/lower_case_tokenizer.h",
         "include/minilucene/analysis/stop_filter.h",
         "include/minilucene/analysis/analyzer.h",
         "include/minilucene/analysis/simple_analyzer.h",
