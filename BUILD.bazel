@@ -75,6 +75,73 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "document",
+    srcs = [
+        "src/document/field.cpp",
+        "src/document/document.cpp",
+    ],
+    hdrs = [
+        "include/minilucene/document/field.h",
+        "include/minilucene/document/document.h",
+    ],
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "analysis",
+    srcs = [
+        "src/analysis/token.cpp",
+        "src/analysis/letter_tokenizer.cpp",
+        "src/analysis/lower_case_filter.cpp",
+        "src/analysis/stop_filter.cpp",
+        "src/analysis/simple_analyzer.cpp",
+        "src/analysis/stop_analyzer.cpp",
+    ],
+    hdrs = [
+        "include/minilucene/analysis/token.h",
+        "include/minilucene/analysis/token_stream.h",
+        "include/minilucene/analysis/tokenizer.h",
+        "include/minilucene/analysis/token_filter.h",
+        "include/minilucene/analysis/letter_tokenizer.h",
+        "include/minilucene/analysis/lower_case_filter.h",
+        "include/minilucene/analysis/stop_filter.h",
+        "include/minilucene/analysis/analyzer.h",
+        "include/minilucene/analysis/simple_analyzer.h",
+        "include/minilucene/analysis/stop_analyzer.h",
+    ],
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+)
+
+cc_test(
+    name = "document_test",
+    srcs = ["tests/unit/document/document_test.cpp"],
+    deps = [
+        ":document",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "simple_analyzer_test",
+    srcs = ["tests/unit/analysis/simple_analyzer_test.cpp"],
+    deps = [
+        ":analysis",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "stop_filter_test",
+    srcs = ["tests/unit/analysis/stop_filter_test.cpp"],
+    deps = [
+        ":analysis",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "p1_demo",
     srcs = ["examples/p1_demo.cpp"],
