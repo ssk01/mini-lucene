@@ -37,20 +37,22 @@ public:
             int target = FindTarget();
             if (target < 0) return false;
 
-            if (!AlignMust(target)) return false;
-            if (HasMust() && !AllMustAt(target)) continue;
+            AdvanceAllTo(must_, target);
 
-            if (MustNotAt(target)) continue;
+            bool has_must = HasActive(must_);
+            if (has_must && !AllAt(must_, target)) continue;
 
-            AlignShoulTo(target);
-            overlap_ = CountMust() + CountShouldAt(target);
+            if (MustNotMatch(target)) continue;
+
+            AdvanceAllTo(should_, target);
+            overlap_ = CountActive(must_) + CountAt(should_, target);
 
             if (overlap_ > 0) {
                 current_doc_ = target;
                 return true;
             }
 
-            AdvanceMustPast(target);
+            AdvancePast(must_, target);
         }
     }
 
@@ -71,64 +73,53 @@ public:
 
 private:
     int FindTarget() {
-        if (HasMust()) return MaxMustDoc();
-        if (HasShould()) return MinShouldDoc();
-        return -1;
-    }
-
-    bool HasMust() const {
-        for (auto& m : must_) if (m) return true;
-        return false;
-    }
-
-    bool HasShould() const {
-        for (auto& s : should_) if (s) return true;
-        return false;
-    }
-
-    int MaxMustDoc() {
-        for (auto& m : must_) if (m) return m->Doc();
-        return -1;
-    }
-
-    int MinShouldDoc() {
-        int min = INT_MAX;
-        for (auto& s : should_) {
-            if (s && s->Doc() < min) min = s->Doc();
-        }
-        return (min == INT_MAX) ? -1 : min;
-    }
-
-    bool AlignMust(int target) {
+        int max_must = -1;
         for (auto& m : must_) {
-            if (!m) continue;
-            while (m->Doc() < target) {
-                if (!m->Next()) { m.reset(); break; }
+            if (m && m->Doc() > max_must) max_must = m->Doc();
+        }
+        if (max_must >= 0) return max_must;
+
+        int min_should = INT_MAX;
+        for (auto& s : should_) {
+            if (s && s->Doc() < min_should) min_should = s->Doc();
+        }
+        return (min_should < INT_MAX) ? min_should : -1;
+    }
+
+    bool HasActive(const std::vector<std::unique_ptr<Scorer>>& v) {
+        for (auto& s : v) if (s) return true;
+        return false;
+    }
+
+    void AdvanceAllTo(std::vector<std::unique_ptr<Scorer>>& v, int target) {
+        for (auto& s : v) {
+            if (!s) continue;
+            while (s->Doc() < target) {
+                if (!s->Next()) { s.reset(); break; }
             }
         }
-        return HasMust();
     }
 
-    bool AllMustAt(int target) {
-        for (auto& m : must_) {
-            if (m && m->Doc() != target) return false;
+    bool AllAt(std::vector<std::unique_ptr<Scorer>>& v, int target) {
+        for (auto& s : v) {
+            if (s && s->Doc() != target) return false;
         }
         return true;
     }
 
-    int CountMust() {
+    int CountActive(const std::vector<std::unique_ptr<Scorer>>& v) {
         int c = 0;
-        for (auto& m : must_) if (m) ++c;
+        for (auto& s : v) if (s) ++c;
         return c;
     }
 
-    int CountShouldAt(int target) {
+    int CountAt(const std::vector<std::unique_ptr<Scorer>>& v, int target) {
         int c = 0;
-        for (auto& s : should_) if (s && s->Doc() == target) ++c;
+        for (auto& s : v) if (s && s->Doc() == target) ++c;
         return c;
     }
 
-    bool MustNotAt(int target) {
+    bool MustNotMatch(int target) {
         for (auto& mn : must_not_) {
             if (!mn) continue;
             while (mn->Doc() < target) {
@@ -139,19 +130,10 @@ private:
         return false;
     }
 
-    void AdvanceMustPast(int target) {
-        for (auto& m : must_) {
-            if (m && m->Doc() == target) {
-                if (!m->Next()) m.reset();
-            }
-        }
-    }
-
-    void AlignShoulTo(int target) {
-        for (auto& s : should_) {
-            if (!s) continue;
-            while (s->Doc() < target) {
-                if (!s->Next()) { s.reset(); break; }
+    void AdvancePast(std::vector<std::unique_ptr<Scorer>>& v, int target) {
+        for (auto& s : v) {
+            if (s && s->Doc() == target) {
+                if (!s->Next()) s.reset();
             }
         }
     }
