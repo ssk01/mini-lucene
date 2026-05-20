@@ -1,6 +1,8 @@
 #include "minilucene/index/segment_reader.h"
 #include "minilucene/index/field_infos.h"
+#include "minilucene/index/fields_reader.h"
 #include "minilucene/index/term_infos_reader.h"
+#include "minilucene/document/document.h"
 #include "minilucene/store/directory.h"
 #include "minilucene/store/index_input.h"
 
@@ -111,12 +113,20 @@ SegmentReader::SegmentReader(store::Directory& dir, const std::string& segment)
     : dir_(dir), segment_(segment) {
     field_infos_ = FieldInfos::Read(dir_, segment_);
     term_infos_ = std::make_unique<TermInfosReader>(dir_, segment_);
+    if (dir_.FileExists(segment_ + ".fdt")) {
+        fields_reader_ = std::make_unique<FieldsReader>(dir_, segment_, *field_infos_);
+    }
     if (dir_.FileExists(segment_ + ".nrm")) {
         nrm_ = dir_.OpenInput(segment_ + ".nrm");
         if (field_infos_->Size() > 0) {
             num_docs_ = static_cast<int>(nrm_->Length() / field_infos_->Size());
         }
     }
+}
+
+std::unique_ptr<document::Document> SegmentReader::Document(int doc_id) {
+    if (!fields_reader_) return nullptr;
+    return fields_reader_->Document(doc_id);
 }
 
 SegmentReader::~SegmentReader() {

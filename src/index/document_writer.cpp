@@ -1,5 +1,6 @@
 #include "minilucene/index/document_writer.h"
 #include "minilucene/index/field_infos.h"
+#include "minilucene/index/fields_writer.h"
 #include "minilucene/index/term.h"
 #include "minilucene/index/term_info.h"
 #include "minilucene/index/term_infos_writer.h"
@@ -68,6 +69,7 @@ void DocumentWriter::AddDocument(const document::Document& doc) {
         field_tokens_per_doc_[doc_count_][field_num] = pos;
     }
 
+    docs_.push_back(doc);
     ++doc_count_;
     field_tokens_per_doc_.resize(doc_count_);
 }
@@ -84,6 +86,7 @@ void DocumentWriter::WriteFieldInfos(const std::string& segment) {
 void DocumentWriter::WritePostings(const std::string& segment) {
     auto frq = dir_.CreateOutput(segment + ".frq");
     auto prx = dir_.CreateOutput(segment + ".prx");
+    FieldsWriter fw(dir_, segment, *field_infos_);
 
     std::vector<int> field_num_tokens(field_infos_->Size(), 0);
     std::vector<std::pair<Term, TermInfo>> term_infos;
@@ -132,6 +135,10 @@ void DocumentWriter::WritePostings(const std::string& segment) {
     tis_writer.Close();
 
     auto nrm = dir_.CreateOutput(segment + ".nrm");
+    for (const auto& d : docs_) {
+        fw.AddDocument(d);
+    }
+
     for (int d = 0; d < doc_count_; ++d) {
         for (int f = 0; f < field_infos_->Size(); ++f) {
             int num_tokens = 0;

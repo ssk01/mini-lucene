@@ -147,6 +147,8 @@ cc_library(
     srcs = [
         "src/index/field_info.cpp",
         "src/index/field_infos.cpp",
+        "src/index/fields_writer.cpp",
+        "src/index/fields_reader.cpp",
         "src/index/term_infos_writer.cpp",
         "src/index/term_infos_reader.cpp",
         "src/index/document_writer.cpp",
@@ -159,6 +161,8 @@ cc_library(
         "include/minilucene/index/document_writer.h",
         "include/minilucene/index/field_info.h",
         "include/minilucene/index/field_infos.h",
+        "include/minilucene/index/fields_reader.h",
+        "include/minilucene/index/fields_writer.h",
         "include/minilucene/index/index_reader.h",
         "include/minilucene/index/index_writer.h",
         "include/minilucene/index/segment_infos.h",
@@ -286,5 +290,17 @@ cc_test(
         ":search",
         "@googletest//:gtest_main",
     ],
+)
+
+cc_binary(
+    name = "index_files",
+    srcs = ["examples/index_files.cpp"],
+    deps = [":index", ":analysis", ":store", ":document"],
+)
+
+cc_binary(
+    name = "search_files",
+    srcs = ["examples/search_files.cpp"],
+    deps = [":index", ":search", ":store", ":document"],
 )
 

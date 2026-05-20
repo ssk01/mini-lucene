@@ -1,5 +1,7 @@
 #pragma once
 
+#include <istream>
+#include <memory>
 #include <string>
 
 namespace minilucene {
@@ -9,6 +11,7 @@ class Field {
 public:
     static Field Keyword(const std::string& name, const std::string& value);
     static Field Text(const std::string& name, const std::string& value);
+    static Field Text(const std::string& name, std::istream& value);
     static Field UnIndexed(const std::string& name, const std::string& value);
     static Field UnStored(const std::string& name, const std::string& value);
 

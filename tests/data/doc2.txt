@@ -1,0 +1,1 @@
+Lucene is a free text search engine library written in Java. It is maintained by the Apache Software Foundation.

@@ -1,5 +1,7 @@
 #include "minilucene/document/field.h"
 
+#include <sstream>
+
 namespace minilucene {
 namespace document {
 
@@ -16,6 +18,12 @@ Field Field::Keyword(const std::string& name, const std::string& value) {
 
 Field Field::Text(const std::string& name, const std::string& value) {
     return Field(name, value, true, true, true);
+}
+
+Field Field::Text(const std::string& name, std::istream& value) {
+    std::ostringstream ss;
+    ss << value.rdbuf();
+    return Field(name, ss.str(), false, true, true);
 }
 
 Field Field::UnIndexed(const std::string& name, const std::string& value) {

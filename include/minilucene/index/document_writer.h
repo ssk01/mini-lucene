@@ -43,6 +43,7 @@ private:
     analysis::Analyzer& analyzer_;
     std::unique_ptr<FieldInfos> field_infos_;
     std::map<Term, std::vector<DocPosting>> postings_;
+    std::vector<document::Document> docs_;
     std::vector<std::vector<int>> field_tokens_per_doc_;
     int doc_count_ = 0;
 };

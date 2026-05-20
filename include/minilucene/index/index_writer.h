@@ -31,12 +31,17 @@ public:
     void Optimize();
     void Close();
 
+    int mergeFactor = 10000;
+
 private:
+    void FlushPending();
+
     store::Directory& dir_;
     std::unique_ptr<analysis::Analyzer> analyzer_;
     std::unique_ptr<DocumentWriter> writer_;
     SegmentInfos segment_infos_;
     int segment_counter_ = 0;
+    int pending_docs_ = 0;
     bool closed_ = false;
 };
 

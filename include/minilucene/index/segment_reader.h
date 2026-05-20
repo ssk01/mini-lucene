@@ -17,6 +17,7 @@ class IndexInput;
 namespace index {
 
 class FieldInfos;
+class FieldsReader;
 class TermInfosReader;
 
 class SegmentReader : public IndexReader {
@@ -30,12 +31,14 @@ public:
     int DocFreq(const Term& term) override;
     int NumDocs() const override { return num_docs_; }
     float Norm(int doc, int field_number) override;
+    std::unique_ptr<document::Document> Document(int doc_id) override;
     void Close() override;
 
 private:
     store::Directory& dir_;
     std::string segment_;
     std::unique_ptr<FieldInfos> field_infos_;
+    std::unique_ptr<FieldsReader> fields_reader_;
     std::unique_ptr<TermInfosReader> term_infos_;
     std::unique_ptr<store::IndexInput> nrm_;
     int num_docs_ = 0;

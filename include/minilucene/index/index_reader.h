@@ -3,6 +3,12 @@
 #include <memory>
 
 namespace minilucene {
+namespace document {
+class Document;
+}
+}
+
+namespace minilucene {
 namespace index {
 
 class Term;
@@ -20,6 +26,7 @@ public:
     virtual int DocFreq(const Term& term) = 0;
     virtual int NumDocs() const = 0;
     virtual float Norm(int doc, int field_number) = 0;
+    virtual std::unique_ptr<document::Document> Document(int doc_id) = 0;
     virtual void Close() = 0;
 };
 
