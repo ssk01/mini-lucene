@@ -22,6 +22,7 @@ public:
     ~SegmentsReader() override;
 
     std::unique_ptr<TermEnum> Terms() override;
+    std::unique_ptr<TermEnum> Terms(const Term& term) override;
     std::unique_ptr<TermDocs> Docs(const Term& term) override;
     std::unique_ptr<TermPositions> Positions(const Term& term) override;
     int DocFreq(const Term& term) override;

@@ -12,7 +12,7 @@ namespace search {
 PrefixQuery::PrefixQuery(index::Term prefix) : prefix_(std::move(prefix)) {}
 
 std::unique_ptr<Scorer> PrefixQuery::CreateScorer(index::IndexReader& reader) const {
-    auto terms = reader.Terms();
+    auto terms = reader.Terms(prefix_);
     if (!terms) return nullptr;
 
     BooleanQuery combined;
@@ -20,8 +20,11 @@ std::unique_ptr<Scorer> PrefixQuery::CreateScorer(index::IndexReader& reader) co
 
     while (terms->Next()) {
         const auto& t = terms->Current();
-        if (t.FieldNumber() != prefix_.FieldNumber()) continue;
-        if (t.Text().compare(0, prefix_.Text().size(), prefix_.Text()) != 0) continue;
+        if (t.FieldNumber() != prefix_.FieldNumber()) break;
+        if (t.Text().compare(0, prefix_.Text().size(), prefix_.Text()) != 0) {
+            if (t.Text() < prefix_.Text()) continue;
+            break;
+        }
         combined.Add(std::make_unique<TermQuery>(t), Occur::SHOULD);
         ++count;
     }

@@ -30,6 +30,7 @@ public:
     ~SegmentReader() override;
 
     std::unique_ptr<TermEnum> Terms() override;
+    std::unique_ptr<TermEnum> Terms(const Term& term) override;
     std::unique_ptr<TermDocs> Docs(const Term& term) override;
     std::unique_ptr<TermPositions> Positions(const Term& term) override;
     int DocFreq(const Term& term) override;
@@ -53,7 +54,7 @@ private:
 
 class SegmentTermEnum : public TermEnum {
 public:
-    SegmentTermEnum(store::IndexInput* tis);
+    SegmentTermEnum(std::unique_ptr<store::IndexInput> tis);
     ~SegmentTermEnum() override;
 
     bool Next() override;
@@ -61,10 +62,14 @@ public:
     int DocFreq() const override { return doc_freq_; }
     void Close() override;
 
+    void Seek(int64_t tis_offset);
+
     int64_t CurrentFreqPointer() const { return freq_pointer_; }
     int64_t CurrentProxPointer() const { return prox_pointer_; }
 
 private:
+    bool ReadCurrentEntry();
+
     std::unique_ptr<store::IndexInput> tis_;
     bool ended_ = false;
     Term term_;

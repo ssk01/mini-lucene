@@ -21,6 +21,7 @@ public:
     virtual ~IndexReader() = default;
 
     virtual std::unique_ptr<TermEnum> Terms() = 0;
+    virtual std::unique_ptr<TermEnum> Terms(const Term& term) = 0;
     virtual std::unique_ptr<TermDocs> Docs(const Term& term) = 0;
     virtual std::unique_ptr<TermPositions> Positions(const Term& term) = 0;
     virtual int DocFreq(const Term& term) = 0;

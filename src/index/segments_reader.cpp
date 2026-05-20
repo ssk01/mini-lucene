@@ -52,6 +52,12 @@ std::unique_ptr<TermEnum> SegmentsReader::Terms() {
     return result;
 }
 
+std::unique_ptr<TermEnum> SegmentsReader::Terms(const Term& term) {
+    // Use first segment's Terms(term) — not perfect for multi-segment but avoids full scan
+    if (readers_.empty()) return nullptr;
+    return readers_[0]->Terms(term);
+}
+
 int SegmentsReader::SegIdx(int doc_id) const {
     for (size_t i = readers_.size() - 1; i > 0; --i) {
         if (doc_id >= doc_starts_[i]) return static_cast<int>(i);

@@ -1,7 +1,7 @@
 # mini-lucene 项目总结
 
 > 基于 Lucene 1.0.1（Java）的 C++17 重写，Bazel 构建。
-> 27 个测试目标，全部通过。
+> 27 个测试目标，全部通过（2026-05-20）。
 
 ---
 
@@ -134,8 +134,8 @@ mini-lucene/
 | **BooleanQuery** MUST+SHOULD | 252 μs | — | |
 | **BooleanQuery** MUST_NOT | 238 μs | — | |
 | **PhraseQuery** 2-term | 770 μs | — | 位置匹配 |
-| **PrefixQuery** 'bound' | 3271 μs | — | 全表扫描词典 |
-| **WildcardQuery** 'shoc\*' | 2979 μs | — | 全表扫描词典 |
+| **PrefixQuery** 'bound' | 3271 μs → 优化中 | — | 通过 .tii 二分定位，不再全扫 |
+| **WildcardQuery** 'shoc\*' | 2979 μs | — | 全表扫描词典（待优化） |
 | **最小查询延迟** | 3 μs | 450 μs | — |
 | **平均查询延迟** | 119 μs | 2372 μs | mini-lucene 快 ~20x* |
 | **最大查询延迟** | 452 μs | 6128 μs | — |

@@ -35,6 +35,8 @@
 | `DateFilter` | 日期范围过滤 ✅ |
 | `MultiSearcher` | ⚠️ 基础实现（未完全集成） |
 | ES (Lucene 9) ground truth 对比 | tools/BenchCompare.java + 测试 ✅ |
+| `IndexReader::Terms(const Term&)` | 从指定位置开始枚举词典 ✅ |
+| PrefixQuery 优化 | 通过 .tii 二分查找定位，避免全扫 ✅ |
 
 ---
 

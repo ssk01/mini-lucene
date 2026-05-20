@@ -13,15 +13,14 @@
 namespace minilucene {
 namespace index {
 
-SegmentTermEnum::SegmentTermEnum(store::IndexInput* tis)
-    : tis_(tis) {}
+SegmentTermEnum::SegmentTermEnum(std::unique_ptr<store::IndexInput> tis)
+    : tis_(std::move(tis)) {}
 
 SegmentTermEnum::~SegmentTermEnum() {
     Close();
 }
 
-bool SegmentTermEnum::Next() {
-    if (ended_) return false;
+bool SegmentTermEnum::ReadCurrentEntry() {
     try {
         int field_num = tis_->ReadVInt();
         std::string text = tis_->ReadString();
@@ -34,6 +33,16 @@ bool SegmentTermEnum::Next() {
         ended_ = true;
         return false;
     }
+}
+
+bool SegmentTermEnum::Next() {
+    if (ended_) return false;
+    return ReadCurrentEntry();
+}
+
+void SegmentTermEnum::Seek(int64_t tis_offset) {
+    ended_ = false;
+    tis_->Seek(tis_offset);
 }
 
 void SegmentTermEnum::Close() {
@@ -188,7 +197,35 @@ float SegmentReader::Norm(int doc, int field_number) {
 
 std::unique_ptr<TermEnum> SegmentReader::Terms() {
     auto tis = dir_.OpenInput(segment_ + ".tis");
-    return std::make_unique<SegmentTermEnum>(tis.release());
+    return std::make_unique<SegmentTermEnum>(std::move(tis));
+}
+
+std::unique_ptr<TermEnum> SegmentReader::Terms(const Term& term) {
+    // Binary search .tii for nearest term <= target, then scan .tis
+    auto tis = dir_.OpenInput(segment_ + ".tis");
+    auto te = std::make_unique<SegmentTermEnum>(std::move(tis));
+
+    // Scan .tii to find the nearest term <= target
+    int64_t tis_offset = 0;
+    auto tii = dir_.OpenInput(segment_ + ".tii");
+    try {
+        while (tii->FilePointer() < tii->Length()) {
+            int64_t off_before = tii->FilePointer();
+            int fn = tii->ReadVInt();
+            std::string text = tii->ReadString();
+            int64_t to = tii->ReadVLong();
+            (void)off_before;
+            if (fn > term.FieldNumber()) break;  // past our field
+            if (fn == term.FieldNumber()) {
+                Term t(fn, text);
+                if (!(t < term)) { tis_offset = to; break; }  // first tii entry >= target
+            }
+            tis_offset = to;  // tii entry < target, use as last-known-good offset
+        }
+    } catch (...) {}
+    tii->Close();
+    te->Seek(tis_offset);
+    return te;
 }
 
 std::unique_ptr<TermDocs> SegmentReader::Docs(const Term& term) {
