@@ -28,6 +28,7 @@ public:
     ~IndexWriter();
 
     void AddDocument(const document::Document& doc);
+    void Optimize();
     void Close();
 
 private:

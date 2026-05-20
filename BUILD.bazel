@@ -153,6 +153,7 @@ cc_library(
         "src/index/index_writer.cpp",
         "src/index/segment_infos.cpp",
         "src/index/segment_reader.cpp",
+        "src/index/segment_merger.cpp",
     ],
     hdrs = [
         "include/minilucene/index/document_writer.h",
@@ -161,6 +162,7 @@ cc_library(
         "include/minilucene/index/index_reader.h",
         "include/minilucene/index/index_writer.h",
         "include/minilucene/index/segment_infos.h",
+        "include/minilucene/index/segment_merger.h",
         "include/minilucene/index/segment_reader.h",
         "include/minilucene/index/term.h",
         "include/minilucene/index/term_docs.h",
@@ -234,6 +236,15 @@ cc_test(
 )
 
 cc_test(
+    name = "segment_merge_test",
+    srcs = ["tests/integration/segment_merge_test.cpp"],
+    deps = [
+        ":index",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "phrase_query_test",
     srcs = ["tests/unit/search/phrase_query_test.cpp"],
     deps = [
@@ -251,14 +262,3 @@ cc_test(
     ],
 )
 
-cc_binary(
-    name = "p1_demo",
-    srcs = ["examples/p1_demo.cpp"],
-    deps = [":util"],
-)
-
-cc_binary(
-    name = "phrase_demo",
-    srcs = ["examples/phrase_demo.cpp"],
-    deps = [":search"],
-)
