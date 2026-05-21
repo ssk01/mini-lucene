@@ -401,6 +401,20 @@ cc_test(
     ],
 )
 
+# Owned by claude-opus-4-7 per AGENTS.md §2 — deepseek must not modify.
+cc_test(
+    name = "forensic_claude_test",
+    srcs = ["tests/integration/forensic_claude_test.cpp"],
+    deps = [
+        ":analysis",
+        ":document",
+        ":index",
+        ":search",
+        ":store",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "segment_merge_test",
     srcs = ["tests/integration/segment_merge_test.cpp"],
