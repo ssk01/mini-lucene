@@ -26,12 +26,12 @@ public:
     std::unique_ptr<TermDocs> Docs(const Term& term) override;
     std::unique_ptr<TermPositions> Positions(const Term& term) override;
     int DocFreq(const Term& term) override;
-    int NumDocs() const override { return total_docs_; }
+    int NumDocs() const override;
     float Norm(int doc, int field_number) override;
     std::unique_ptr<document::Document> Document(int doc_id) override;
     void Delete(int doc_id) override;
     bool IsDeleted(int doc_id) const override;
-    int MaxDoc() const override { return total_docs_; }
+    int MaxDoc() const override;
     void Close() override;
 
 private:
@@ -40,7 +40,6 @@ private:
 
     std::vector<std::unique_ptr<SegmentReader>> readers_;
     std::vector<int> doc_starts_;
-    int total_docs_ = 0;
 };
 
 }  // namespace index

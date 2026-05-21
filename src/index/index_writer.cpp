@@ -2,6 +2,7 @@
 #include "minilucene/index/document_writer.h"
 #include "minilucene/index/segment_infos.h"
 #include "minilucene/index/segment_merger.h"
+#include "minilucene/index/segment_reader.h"
 #include "minilucene/analysis/analyzer.h"
 #include "minilucene/document/document.h"
 #include "minilucene/store/directory.h"
@@ -12,6 +13,11 @@ namespace index {
 IndexWriter::IndexWriter(store::Directory& dir, std::unique_ptr<analysis::Analyzer> analyzer)
     : dir_(dir), analyzer_(std::move(analyzer)) {
     writer_ = std::make_unique<DocumentWriter>(dir_, *analyzer_);
+    segment_infos_ = *SegmentInfos::Read(dir_);
+    for (const auto& seg : segment_infos_.Segments()) {
+        int num = std::stoi(seg.name.substr(1));
+        if (num >= segment_counter_) segment_counter_ = num + 1;
+    }
 }
 
 IndexWriter::~IndexWriter() {
@@ -39,7 +45,15 @@ void IndexWriter::FlushPending() {
 void IndexWriter::Optimize() {
     FlushPending();
     auto segs = segment_infos_.Segments();
-    if (segs.size() <= 1) return;
+    if (segs.empty()) return;
+
+    // Bail out early only if single segment AND no deletions to compact
+    if (segs.size() == 1) {
+        auto sr = std::make_unique<SegmentReader>(dir_, segs[0].name);
+        bool has_deletions = sr->NumDocs() != sr->MaxDoc();
+        sr->Close();
+        if (!has_deletions) return;
+    }
 
     std::vector<std::string> seg_names;
     for (const auto& seg : segs) {
@@ -60,10 +74,13 @@ void IndexWriter::Optimize() {
         dir_.DeleteFile(name + ".frq");
         dir_.DeleteFile(name + ".prx");
         dir_.DeleteFile(name + ".nrm");
+        dir_.DeleteFile(name + ".del");
     }
 
-    int total_docs = 0;
-    for (const auto& seg : segs) total_docs += seg.doc_count;
+    auto merged_reader = std::make_unique<SegmentReader>(dir_, merged);
+    int total_docs = merged_reader->NumDocs();
+    merged_reader->Close();
+
     segment_infos_ = SegmentInfos();
     segment_infos_.Add(merged, total_docs);
     segment_infos_.Write(dir_);

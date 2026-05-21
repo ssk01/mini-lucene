@@ -14,14 +14,27 @@ namespace index {
 
 SegmentsReader::SegmentsReader(store::Directory& dir) {
     auto seg_infos = SegmentInfos::Read(dir);
+    int acc = 0;
     for (const auto& si : seg_infos->Segments()) {
-        doc_starts_.push_back(total_docs_);
-        total_docs_ += si.doc_count;
+        doc_starts_.push_back(acc);
+        acc += si.doc_count;
         readers_.push_back(std::make_unique<SegmentReader>(dir, si.name));
     }
 }
 
 SegmentsReader::~SegmentsReader() { Close(); }
+
+int SegmentsReader::NumDocs() const {
+    int count = 0;
+    for (auto& r : readers_) count += r->NumDocs();
+    return count;
+}
+
+int SegmentsReader::MaxDoc() const {
+    int count = 0;
+    for (auto& r : readers_) count += r->MaxDoc();
+    return count;
+}
 
 std::unique_ptr<TermEnum> SegmentsReader::Terms() {
     struct SetEnum : TermEnum {
