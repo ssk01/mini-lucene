@@ -114,13 +114,18 @@ claude 写测试时，expected 值必须能追溯到以下来源之一：
 
 <!-- 以下为活的待办列表 -->
 
-- **[2026-05-21] FAILING TEST: `ForensicClaude.DeleteOptimizeStoredFieldReadConsistency`** (deepseek 处理)
+- ~~**[2026-05-21] FAILING TEST: `ForensicClaude.DeleteOptimizeStoredFieldReadConsistency`** (deepseek 处理)~~ **RESOLVED in 9c16d71 (claude verified bcf4420+1)** —— 全 29 测试通过，含 3/3 forensic。
   - Test in `tests/integration/forensic_claude_test.cpp:67`
   - Symptom: `SegmentsReader.Delete(0)` 和 `Delete(2)` 调用之后，`NumDocs()` 仍返回 5（期望 3）。Optimize 之后 NumDocs/MaxDoc 仍然是 5，所有 5 个 doc 都保留。
   - Suspected root cause: `include/minilucene/index/segments_reader.h:29` 的 `NumDocs() const override { return total_docs_; }` 返回构造时缓存的 total_docs_，没有随 Delete 调用更新。Delete 本身可能也没有正确委托给下层 SegmentReader 并持久化删除位图。
   - Oracle source: scenario invariant（见 test §1 顶部注释），不依赖任何实现细节。
   - Required fix: 让 SegmentsReader 的 Delete + NumDocs + Close 正确处理跨段删除；让 IndexWriter.Optimize 真正丢弃带 tombstone 的 slot。修完后 `bazel test //:forensic_claude_test` 必须 3/3 通过，且不破坏既有 29 个测试。
   - Do **not** modify `forensic_claude_test.cpp` —— 这个测试是 spec，不是 artifact。
+
+- **[2026-05-21] 协议轻度违规：deepseek 在 9c16d71 之后未在 REVIEW.md §14 追加日志条** (deepseek 自行补)
+  - 协议要求（AGENTS.md §8.2 + §3 + 4.2）每个 commit 后必须在 §14 追加日志条
+  - 9c16d71 commit body 写得不错（说了 root cause + 修了什么），但 §14 仍是 `<!-- deepseek 的条目应追加在这里之后 -->` 没有他的条目
+  - 软性处理：下一轮 ACT 时自行补一条 §14 日志条（即使是补登也行）。再犯升级 STOP。
 
 ---
 

@@ -1160,4 +1160,16 @@ REFLECTION v2 相比 v1 增加的**测试相关认知**（不计代码层面的 
 - Result: 每个 agent 自上次用户 commit 起最多 10 个 commit，超过即 STOP。两边合计上限 20 commit。
 - Why: 用户原话"loop 10轮停止吧，别无止境了"——降低无人值守失控烧 token 风险。
 
+### 2026-05-21 17:43 — [claude] 验证 deepseek 9c16d71 修复，第 1 轮 ping-pong 完成
+- Files touched: `AGENTS.md` §6（划掉 pending + 加协议违规软提醒）、`REVIEW.md` §14（本条）
+- Commit: pending
+- Result: **全 29 测试通过**，包含 `forensic_claude_test` 3/3 全绿。
+  - ✅ `ForensicClaude.DeleteOptimizeStoredFieldReadConsistency` 现在通过
+  - ✅ `ForensicClaude.PhraseSlopGating` / `SloppyPhraseScoreDecreasesWithDistance` 继续通过
+  - ✅ 既有 26 个测试（包括 `regression_test`、`reverse_test`、`stress_test`）全绿，无回归
+  - ✅ deepseek 协议合规：9c16d71 只动 `include/minilucene/index/segments_reader.h` + `src/index/segments_reader.cpp` + `src/index/index_writer.cpp`，未触碰 forensic/AGENTS/REVIEW
+  - ⚠️ deepseek 轻度违规：未在 §14 追加日志条（§6 已记录软提醒，下一轮自补）
+- Why: 第 1 轮 ping-pong 完整跑通 —— claude 写 forensic 抓 bug → deepseek 修 → claude 验证。协议核心机制 work。
+- 元观察: 这是 §10.3 / §13 论证的"双 agent 分工破 oracle 污染"的第一次实战验证 —— **forensic test 的 oracle 来自 scenario invariant**，deepseek 改实现让测试变绿，但他无法通过"改 expected"作弊（forensic_claude_test 他不能动）。这正是协议要保护的核心性质。
+
 <!-- deepseek 的条目应追加在这里之后 -->
