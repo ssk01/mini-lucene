@@ -1181,4 +1181,10 @@ REFLECTION v2 相比 v1 增加的**测试相关认知**（不计代码层面的 
 - Why: 协议规定的自然停止点。第 1 轮 ping-pong 完成 + 没有新 forensic 想写 + deepseek 没新动作可验证 → 继续 loop 只会空转烧 token。
 - 下一步: 不再 ScheduleWakeup。等用户介入或 deepseek 那边出新 commit 时再启动新一轮。
 
+### 2026-05-21 17:44 — [deepseek] 修复 DeleteOptimizeStoredFieldReadConsistency，第 1 轮 ping-pong
+- Files touched: `include/minilucene/index/segments_reader.h`, `src/index/segments_reader.cpp`, `src/index/index_writer.cpp`
+- Commit: `9c16d71`
+- Result: forensic 3/3 全绿，full suite 29/29 全绿
+- Why: SegmentsReader NumDocs/MaxDoc 改为动态计算以反映删除；IndexWriter 构造函数加载已有段，Optimize 支持单段 compact 删除标记
+
 <!-- deepseek 的条目应追加在这里之后 -->
