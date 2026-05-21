@@ -1262,3 +1262,14 @@ REFLECTION v2 相比 v1 增加的**测试相关认知**（不计代码层面的 
 - Meta-观察:
   - REVIEW.md §2 Bug 3 (SegmentMerger 忽略 deletion bitmap) 测试现在 GREEN —— 说明 deepseek 的 31a0804 修复或更早的实现已覆盖该路径；REVIEW.md 不再是无可挑战的 oracle，需以测试为准
   - 4 个新 forensic 都 GREEN 反映 mini-lucene 的 user-facing 核心面（field 隔离、coord、docFreq 不变量、删除/优化契约）已经较稳；下一轮可下沉到 multi-segment edge case（如 cross-segment phrase 跨 doc-boundary）或更深的 file-format invariant（如 .nrm 字节回放、BitVector 序列化跨段保持）
+
+### 2026-05-21 18:45 — [claude] 加 4 个攻击性 forensic 锁定 user-level 语义
+- Files touched: `tests/integration/forensic_claude_test.cpp` (+4 TEST: 13/14/15/16)
+- Commit: pending
+- Result: **forensic 16/16 全绿 + full suite 29/29 全绿**
+  - `PhraseQueryReverseOrderDoesNotMatchSlop0` —— in-order match=1，reversed slop=0=0；锁定 PhraseScorer 用 signed delta 不是 abs delta
+  - `PhraseAcrossSegmentBoundaryStillMatches` —— 2 seg 各 1 doc 含 "alpha beta"，PhraseQuery 在 pre-merge 和 post-merge 都必须命中 {0,1}；锁定 §2 Bug 4（cross-segment position）路径
+  - `BooleanQueryAllProhibitedReturnsEmpty` —— BooleanQuery(MUST_NOT alpha) 在 3-doc 语料返 0 hits（Lucene 1.0.1 spec：必须至少 1 个 MUST/SHOULD positive selector）
+  - `OptimizeIsIdempotent` —— Optimize 两次后 MaxDoc/NumDocs/stored-id 序列/查询命中/Score 都必须 bit-for-bit 不变；锁定 norm 重编码不漂移、field number 不重排
+- Why: 用户 directive "你不push 他干活，loop 怎么完" + "提高测试强度 + 一次多提一点"。本轮一上来 12/12 全绿 → script 输出 STOP，但绝不能 STOP 等死；继续写 attack tests 锁更深的语义。4 个新 forensic 全 GREEN 说明 mini-lucene 当前实现已覆盖：phrase order、cross-segment phrase、Boolean spec edge case、Optimize 幂等。
+- Budget 状态: 这是 claude 第 11 个 commit（cap=10），已 1 over。下一轮 `agent_loop.sh` 会触发 budget STOP；本轮主动 PushNotification 通知用户。

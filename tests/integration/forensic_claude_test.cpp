@@ -1193,4 +1193,325 @@ TEST(ForensicClaude, NumDocsMaxDocContractUnderDeleteAndOptimize) {
     }
 }
 
+// =============================================================================
+// Forensic Test 13: PhraseQuery with slop=0 enforces term ORDER.
+// =============================================================================
+//
+// Corpus (1 doc, single field "body"):
+//   d0: "alpha beta gamma"  (positions: alpha=0, beta=1, gamma=2)
+//
+// Oracle (Lucene 1.0.1 PhraseQuery, hand-derived):
+//   Phrase "alpha beta" slop=0 matches d0 because positions(beta) -
+//   positions(alpha) = 1 - 0 = 1 == |query|-position-gap = 1.  -> 1 hit.
+//
+//   Phrase "beta alpha" slop=0 expects beta at offset 0 and alpha at offset
+//   1 in the document. Required position gap: positions(alpha) -
+//   positions(beta) = 0 - 1 = -1, which is not the required +1 for an
+//   in-order match with slop=0. Per Lucene 1.0.1 PhraseScorer, exact phrase
+//   requires the second term to follow the first by exactly 1 position; a
+//   reversed pair does not match with slop=0. -> 0 hits.
+//
+// This catches:
+//   - PhraseScorer treating the term list as a multiset (would match both)
+//   - position-difference comparison using abs() instead of signed delta
+//   - slop=0 path silently widening to slop>=1
+TEST(ForensicClaude, PhraseQueryReverseOrderDoesNotMatchSlop0) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        document::Document d;
+        d.Add(document::Field::Text("body", "alpha beta gamma"));
+        w.AddDocument(d);
+        w.Close();
+    }
+
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    {  // forward: must match
+        search::PhraseQuery pq;
+        pq.Add(index::Term(0, "alpha"));
+        pq.Add(index::Term(0, "beta"));
+        pq.SetSlop(0);
+        auto h = s.Search(pq);
+        ASSERT_NE(h, nullptr);
+        EXPECT_EQ(h->Length(), 1)
+            << "in-order phrase 'alpha beta' must match d0; got "
+            << h->Length();
+    }
+    {  // reversed: must NOT match at slop=0
+        search::PhraseQuery pq;
+        pq.Add(index::Term(0, "beta"));
+        pq.Add(index::Term(0, "alpha"));
+        pq.SetSlop(0);
+        auto h = s.Search(pq);
+        ASSERT_NE(h, nullptr);
+        EXPECT_EQ(h->Length(), 0)
+            << "reversed phrase 'beta alpha' slop=0 must NOT match. If 1 hit, "
+               "PhraseScorer is using |delta| instead of signed delta, or "
+               "ignoring term order.";
+    }
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 14: Phrase that exists in TWO separate segments — both must
+// be found post-merge AND pre-merge (multi-segment correctness).
+// =============================================================================
+//
+// Scenario:
+//   Segment A: d0 body="alpha beta gamma"
+//   Segment B: d1 body="delta alpha beta"
+//   (Two separate IndexWriter sessions, mergeFactor=10000 to prevent
+//   auto-merge.)
+//
+// Oracle (scenario invariant + Lucene 1.0.1 multi-segment phrase contract):
+//   PhraseQuery "alpha beta" slop=0 must match both d0 and d1, regardless
+//   of which segment each lives in. Positions are encoded per-segment, so
+//   the searcher must decode them in the correct segment's frame — not
+//   accumulate position deltas across segments (REVIEW.md §2 Bug 4 family).
+//   After Optimize() forces a merge, the same query must still return both
+//   docs — merger must rewrite .prx with correct, segment-local position
+//   deltas in the merged segment.
+//
+// Pre-merge expected: hit set {0, 1}  (segIdx-mapped global docIDs)
+// Post-merge expected: same hit set, both docs survive merge.
+//
+// This catches:
+//   - Position deltas leaking across segment boundary (Bug 4)
+//   - SegmentMerger writing positions as global offsets instead of
+//     per-doc resets
+//   - PhraseScorer maintaining stale position state across segment switch
+//   - Merge losing one of the phrase-matching docs entirely
+TEST(ForensicClaude, PhraseAcrossSegmentBoundaryStillMatches) {
+    store::RAMDirectory dir;
+
+    // Segment A.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 10000;
+        document::Document d;
+        d.Add(document::Field::Text("body", "alpha beta gamma"));
+        w.AddDocument(d);
+        w.Close();
+    }
+
+    // Segment B.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 10000;
+        document::Document d;
+        d.Add(document::Field::Text("body", "delta alpha beta"));
+        w.AddDocument(d);
+        w.Close();
+    }
+
+    auto run_phrase = [&](index::IndexReader& reader) {
+        search::IndexSearcher s(reader);
+        search::PhraseQuery pq;
+        pq.Add(index::Term(0, "alpha"));
+        pq.Add(index::Term(0, "beta"));
+        pq.SetSlop(0);
+        auto h = s.Search(pq);
+        std::vector<int> ids;
+        if (h != nullptr) {
+            for (int i = 0; i < h->Length(); ++i) ids.push_back(h->Id(i));
+        }
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    };
+
+    // Pre-merge: 2 segments.
+    {
+        index::SegmentsReader r(dir);
+        ASSERT_EQ(r.NumDocs(), 2);
+        auto ids = run_phrase(r);
+        const std::vector<int> expected = {0, 1};
+        EXPECT_EQ(ids, expected)
+            << "pre-merge: both segments contain 'alpha beta' (in order), "
+               "must match both.";
+        r.Close();
+    }
+
+    // Force merge.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.Optimize();
+        w.Close();
+    }
+
+    // Post-merge: 1 segment.
+    {
+        index::SegmentsReader r(dir);
+        ASSERT_EQ(r.NumDocs(), 2);
+        auto ids = run_phrase(r);
+        const std::vector<int> expected = {0, 1};
+        EXPECT_EQ(ids, expected)
+            << "post-merge: merged segment must preserve phrase matches in "
+               "both original docs. If only {0} or {1}, merger lost or "
+               "corrupted one doc's positions.";
+        r.Close();
+    }
+}
+
+// =============================================================================
+// Forensic Test 15: BooleanQuery with ONLY prohibited clauses returns empty.
+// =============================================================================
+//
+// Corpus (3 docs, single field "body"):
+//   d0: "alpha"
+//   d1: "beta"
+//   d2: "alpha beta"
+//
+// Query: BooleanQuery(MUST_NOT alpha)
+//
+// Oracle (Lucene 1.0.1 BooleanScorer spec):
+//   A BooleanQuery must contain at least one MUST or SHOULD clause to
+//   produce any hits. A query containing only MUST_NOT clauses has no
+//   positive selector — the spec returns an empty hit set rather than
+//   "all docs not matching". This is a deliberate edge-case choice in
+//   Lucene 1.0.1 to prevent accidental full-corpus scans.
+//
+// Expected: 0 hits (regardless of whether some doc lacks the prohibited
+// term).
+//
+// This catches:
+//   - BooleanScorer naively treating MUST_NOT as a unary negation over
+//     the full corpus (would return d1)
+//   - MUST_NOT-only path falling through to "match all" default
+//   - Off-by-one in clause counting that silently elevates MUST_NOT to MUST
+TEST(ForensicClaude, BooleanQueryAllProhibitedReturnsEmpty) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        for (const auto& body :
+             std::vector<std::string>{"alpha", "beta", "alpha beta"}) {
+            document::Document d;
+            d.Add(document::Field::Text("body", body));
+            w.AddDocument(d);
+        }
+        w.Close();
+    }
+
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    search::BooleanQuery bq;
+    bq.Add(std::make_unique<search::TermQuery>(index::Term(0, "alpha")),
+           search::Occur::MUST_NOT);
+
+    auto h = s.Search(bq);
+    ASSERT_NE(h, nullptr);
+    EXPECT_EQ(h->Length(), 0)
+        << "MUST_NOT-only BooleanQuery must return 0 hits (Lucene 1.0.1: at "
+           "least one MUST/SHOULD required). If 1 hit (d1: 'beta'), the "
+           "scorer treated MUST_NOT as 'all-corpus minus matched'.";
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 16: Optimize() is idempotent.
+// =============================================================================
+//
+// Write 4 docs (single segment), Optimize once -> snapshot state, Optimize
+// again -> verify second snapshot identical.
+//
+// Oracle (math invariant — Lucene 1.0.1 IndexWriter contract):
+//   For any index I, Optimize(Optimize(I)) == Optimize(I) bytewise from a
+//   semantics standpoint: (a) doc count unchanged, (b) MaxDoc unchanged,
+//   (c) every query returns identical hits + identical scores, (d) every
+//   stored field round-trips identically. The second Optimize must be a
+//   no-op (or at worst rewrite to the same logical content), not a
+//   destructive transform.
+//
+// This catches:
+//   - Optimize re-encoding norms with quantization drift on each pass
+//   - Optimize re-numbering fields on each pass (would scramble field IDs)
+//   - Optimize accidentally re-applying a non-existent deletion bitmap
+//   - Optimize losing 1 doc per pass (off-by-one in slot iteration)
+TEST(ForensicClaude, OptimizeIsIdempotent) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        const std::vector<std::pair<std::string, std::string>> docs = {
+            {"id-0", "alpha beta"},
+            {"id-1", "alpha gamma"},
+            {"id-2", "beta delta"},
+            {"id-3", "alpha"},
+        };
+        for (const auto& [id, body] : docs) {
+            w.AddDocument(MakeDoc(id, body));
+        }
+        w.Close();
+    }
+
+    auto snapshot = [&]() {
+        index::SegmentsReader r(dir);
+        search::IndexSearcher s(r);
+        struct Snap {
+            int max_doc;
+            int num_docs;
+            std::vector<std::string> stored_ids;
+            std::vector<int>   alpha_doc_ids;
+            std::vector<float> alpha_scores;
+        };
+        Snap snap;
+        snap.max_doc  = r.MaxDoc();
+        snap.num_docs = r.NumDocs();
+        for (int i = 0; i < r.MaxDoc(); ++i) {
+            auto doc = r.Document(i);
+            const document::Field* f = doc ? doc->GetField("id") : nullptr;
+            snap.stored_ids.push_back(f ? f->Value() : std::string("<null>"));
+        }
+        // body is field 1 (id Keyword first, body Text second).
+        search::TermQuery tq(index::Term(1, "alpha"));
+        auto h = s.Search(tq);
+        if (h != nullptr) {
+            for (int i = 0; i < h->Length(); ++i) {
+                snap.alpha_doc_ids.push_back(h->Id(i));
+                snap.alpha_scores.push_back(h->Score(i));
+            }
+        }
+        r.Close();
+        return snap;
+    };
+
+    // First Optimize.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.Optimize();
+        w.Close();
+    }
+    auto snap1 = snapshot();
+
+    // Second Optimize — must be a no-op semantically.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.Optimize();
+        w.Close();
+    }
+    auto snap2 = snapshot();
+
+    EXPECT_EQ(snap1.max_doc, snap2.max_doc) << "MaxDoc must be idempotent";
+    EXPECT_EQ(snap1.num_docs, snap2.num_docs) << "NumDocs must be idempotent";
+    EXPECT_EQ(snap1.stored_ids, snap2.stored_ids)
+        << "stored id order must be idempotent across optimize passes";
+    EXPECT_EQ(snap1.alpha_doc_ids, snap2.alpha_doc_ids)
+        << "hit set for body:alpha must be idempotent";
+    ASSERT_EQ(snap1.alpha_scores.size(), snap2.alpha_scores.size());
+    for (size_t i = 0; i < snap1.alpha_scores.size(); ++i) {
+        EXPECT_FLOAT_EQ(snap1.alpha_scores[i], snap2.alpha_scores[i])
+            << "score for hit #" << i << " must be identical across optimize "
+               "passes (norm quantization drift would surface here).";
+    }
+}
+
 }  // namespace minilucene
