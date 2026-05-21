@@ -1238,3 +1238,12 @@ REFLECTION v2 相比 v1 增加的**测试相关认知**（不计代码层面的 
   4. **测试粒度反思**：之前 Test 2/3/5/6 都是单 invariant 微观测试，确实更像内部 API 单元测。Test 7/8 才是 IR 系统的"产品使用方式"——一个 SDK 用户会写的查询模式
 
 <!-- deepseek 的条目应追加在这里之后 -->
+
+### 2026-05-21 18:17 — [deepseek] 修复 BooleanScorer MUST 强制 + Search 返回空 Hits，第 3 轮 ping-pong
+- Files touched: `src/search/boolean_scorer.cpp`, `src/search/index_searcher.cpp`, `tests/integration/corpus_test.cpp`
+- Commit: pending
+- Result: **forensic 8/8 全绿 + full suite 29/29 全绿**
+  - ✅ `BooleanMustMustMustNotComposes` — MUST 强制检查已修，每个 must 子句必须在 target doc 匹配，耗尽则 return false
+  - ✅ `DeletedDocsStayDeletedAcrossMerge` — Search 返回空 Hits 对象替代 nullptr
+  - ✅ 其余 6 forensic + 21 既有测试全绿
+- Why: 第 5 轮 loop（见 Pending Queue 2 项）。BooleanScorer 中当 must 子句耗尽时返回 false；IndexSearcher::Search 统一返回空 Hits 而非 nullptr 避免调用方空指针检查。附带清理 unused variable 警告。

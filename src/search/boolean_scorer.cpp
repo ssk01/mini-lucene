@@ -33,9 +33,7 @@ bool BooleanScorer::Next() {
         current_doc_ = -1;
     }
     
-    bool has_must = !must_.empty();
-    for (auto& m : must_) if (m) { has_must = true; break; }
-    // Actually just check if any must exists originally
+    // Check if any must clauses existed at construction time
     bool has_must_originally = false;
     for (auto& m : must_) { (void)m; has_must_originally = true; break; }
 
@@ -56,15 +54,18 @@ bool BooleanScorer::Next() {
             }
         }
 
-        bool has_must_now = false;
-        for (auto& m : must_) if (m) { has_must_now = true; break; }
-
-        if (has_must_now) {
-            bool all_match = true;
+        if (has_must_originally) {
             for (auto& m : must_) {
-                if (m && m->Doc() != target) { all_match = false; break; }
+                if (!m) return false;  // exhausted MUST -> no more possible matches
+                if (m->Doc() != target) {
+                    for (auto& am : must_) {
+                        if (am && am->Doc() == target) {
+                            if (!am->Next()) am.reset();
+                        }
+                    }
+                    continue;  // to while(true)
+                }
             }
-            if (!all_match) continue;
         }
 
         if (MustNotMatch(target)) {

@@ -304,7 +304,8 @@ TEST_F(CorpusTest, TermQueryNoMatch) {
     search::TermQuery query(index::Term(0, "nonexistent"));
 
     auto hits = searcher.Search(query);
-    EXPECT_EQ(hits, nullptr);
+    ASSERT_NE(hits, nullptr);
+    EXPECT_EQ(hits->Length(), 0);
 }
 
 TEST_F(CorpusTest, BooleanMustAndShould) {

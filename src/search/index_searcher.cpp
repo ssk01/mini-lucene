@@ -61,7 +61,9 @@ IndexSearcher::~IndexSearcher() {
 std::unique_ptr<Hits> IndexSearcher::Search(const Query& query) {
     if (!reader_) return nullptr;
     auto scorer = query.CreateScorer(*reader_);
-    if (!scorer) return nullptr;
+    if (!scorer) {
+        return std::make_unique<Hits>(*reader_, 0, std::vector<int>(), std::vector<float>());
+    }
 
     std::vector<int> doc_ids;
     std::vector<float> scores;
