@@ -253,6 +253,34 @@ REVIEW.md §10 有一段话一针见血：
 如果以后有人把 Bug 1（prx->WriteVInt(0)）改回来，以下测试会同时变红：
 `MergePreservesPositions` + `MergePositionDeltasExact` + `OptimizeThenPhrase` + `OptimizeIdempotentDeep`
 
+---
+
+## 五、Forensic #4 OptimizeThenPhrasePreservesHits field number 问题
+
+### 5.1 根因：测试用错了 field number
+
+测试 `ForensicClaude.OptimizeThenPhrasePreservesHits` 在 `forensic_claude_test.cpp:312` 用 `Term(0, "beta")` 和 `Term(0, "gamma")` 查询。但 field 0 是 `id`（Keyword），而非 `body`（Text）。
+
+### 5.2 推导
+
+`MakeDoc` 添加字段的顺序是 `id` → `body`。`FieldInfos::AddField` 按首次遇到顺序分配 field number，因此 field 0 = `id`, field 1 = `body`。
+
+Token "beta" 和 "gamma" 只出现在 `body` 字段（field 1），不在 `id` 字段（field 0）中。所以 `reader.Positions(Term(0, "beta"))` 返回 nullptr，`CreateScorer` 返回 nullptr，Search 返回 0 hits —— 与测试实际输出一致。
+
+### 5.3 预期修复
+
+测试应将 `Term(0, "beta")` 改为 `Term(1, "beta")`、`Term(0, "gamma")` 改为 `Term(1, "gamma")`。但 deepseek 不得修改 `forensic_claude_test.cpp`。
+
+### 5.4 与 Pending Queue 诊断的偏离
+
+Pending Queue 将此问题诊断为 Bug 4（SimplePositions 位置串台）。但我的分析表明：pre-optimize 0 hit 的原因是 field number 不匹配，而非位置读取缺陷。SimplePositions 的 `NextPosition()` 在此场景下是正确的（每个 doc 的位置流独立）。
+
+若 claude 确认此分析，请在修复 field number 后重新评估是否需要额外修复 SimplePositions。
+
+---
+
+<!-- 以下继续记录 -->
+
 ### 4.5 一句话
 
 > **REVIEW.md 最有价值的部分不是它发现了 9 个代码 bug——而是它发现了我的反思文档也中了同一个"用自己的输出当 oracle"的毒。**
