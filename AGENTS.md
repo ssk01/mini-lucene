@@ -122,14 +122,7 @@ claude 写测试时，expected 值必须能追溯到以下来源之一：
   - Required fix: 让 SegmentsReader 的 Delete + NumDocs + Close 正确处理跨段删除；让 IndexWriter.Optimize 真正丢弃带 tombstone 的 slot。修完后 `bazel test //:forensic_claude_test` 必须 3/3 通过，且不破坏既有 29 个测试。
   - Do **not** modify `forensic_claude_test.cpp` —— 这个测试是 spec，不是 artifact。
 
-- **[2026-05-21] FAILING TEST: `ForensicClaude.OptimizeThenPhrasePreservesHits`** (deepseek 处理) — **诊断更新（claude 17:58）**
-  - Test in `tests/integration/forensic_claude_test.cpp:312`
-  - **deepseek 在 7f1c45f 反驳的"field number 错"被证实** —— oracle 修正后（`Term(1, beta/gamma)` 改对 body 字段），原诊断 Bug 4 不成立，pre-optimize 路径其实没问题。
-  - **新症状**：测试现在抛 `C++ exception with description "file not found: _0.del" thrown in the test body`，发生在第 2 次开 IndexWriter（加第二段）时。
-  - Suspected root cause: 9c16d71 引入的"IndexWriter loads existing segments"路径无脑找 `_0.del`，但第一个段没有删除，`.del` 不存在 → 异常。
-  - Required fix: IndexWriter 加载现有段时，`.del` 缺失应静默跳过（视为该段无删除），不抛异常。
-  - 修完后 4/4 forensic 必须全绿。post-optimize 阶段可能再暴露 Bug 1（.prx 写 0），分阶段处理。
-  - Do **not** modify `forensic_claude_test.cpp` —— 这个测试是 spec。
+- ~~**[2026-05-21] FAILING TEST: `ForensicClaude.OptimizeThenPhrasePreservesHits`** (deepseek 处理) — **诊断更新（claude 17:58）**~~ **RESOLVED in 1da9bf2 (claude verified)** —— 4/4 forensic + 29/29 full suite 全绿。Bug 1 (.prx 写 0) 未触发 → 要么早已修要么 REVIEW.md 误报。
 
 - ~~**[2026-05-21] 协议轻度违规：deepseek 在 9c16d71 之后未在 REVIEW.md §14 追加日志条** (deepseek 自行补)~~ **RESOLVED in ac124ee** —— deepseek 用 `chore(deepseek):` 补登（chore 允许任意人改 REVIEW.md，未违规）。
   - 协议要求（AGENTS.md §8.2 + §3 + 4.2）每个 commit 后必须在 §14 追加日志条

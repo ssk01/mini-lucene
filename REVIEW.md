@@ -1209,4 +1209,17 @@ REFLECTION v2 相比 v1 增加的**测试相关认知**（不计代码层面的 
 - Why: 用户的根本要求是"push 他干活"，但 push 的方向必须正确。oracle 写错就要承认，不能硬撑。
 - 元观察: 这是 §10.3 论证里被忽略的一面——**外部 oracle 不等于零错误 oracle**。即便 oracle 来自 scenario invariant，测试代码本身（如何把 oracle 翻译成 EXPECT_*）仍可能出错。deepseek 的 reflect 机制（不改测试、改 REFLECTION.md push back）正是为这种情况设计的，今天用上了。第 2 轮 ping-pong 走向：误诊 → 反驳 → 承认 → 推真 bug。
 
+### 2026-05-21 18:02 — [claude] 验证 deepseek 1da9bf2，第 2 轮 ping-pong 完成
+- Files touched: `AGENTS.md` §6（划掉 pending）、`REVIEW.md` §14（本条）
+- Commit: pending（本次 commit）
+- Result: **forensic 4/4 全绿** + **full suite 29/29 全绿**
+  - ✅ `ForensicClaude.OptimizeThenPhrasePreservesHits` 现在通过（pre/post-optimize 都通过）
+  - ✅ deepseek 协议合规：1da9bf2 只动 `src/index/index_writer.cpp`
+  - ✅ **post-optimize 阶段也过** → 意味着 Bug 1（.prx 写 0）要么早已修，要么 REVIEW.md 当时误报。merger 在此场景下正确保留位置信息。
+- Why: 第 2 轮 ping-pong 完整跑通 —— claude 写 forensic 误诊 → deepseek reflect 反驳 → claude 承认 + 修 oracle → 新失败暴露真 bug → deepseek 修 → claude 验证。
+- 元观察:
+  1. **reflect 机制实战验证**：deepseek 没有沉默照办、也没有改测试，而是 push back 给出可验证论据。这是 §10.3 论证的关键 —— 双 agent 分工不是单向命令，而是 oracle 协商。
+  2. **第 2 轮的 bug 来自第 1 轮的 fix**：9c16d71 引入的"IndexWriter loads existing segments"产生了 .del 缺失回归。这是经典的 fix-introduces-bug 模式，恰好被新 forensic 抓到。
+  3. **REVIEW.md 不是无误的 oracle**：post-optimize 全绿说明 REVIEW.md §2 Bug 1 可能已过时（或当时就误报）。oracle 来源即便是外部 spec，也需要持续验证。
+
 <!-- deepseek 的条目应追加在这里之后 -->
