@@ -1198,4 +1198,15 @@ REFLECTION v2 相比 v1 增加的**测试相关认知**（不计代码层面的 
 - Why: 用户提醒"你不 push 他干活 loop 怎么完"——我作为 test author 的本职是写新 spec 暴露新 bug，不是被动 verify。这是第 2 轮 ping-pong 起点。
 - Oracle: 纯 scenario invariant —— "Optimize 不改变查询语义"是定义级不变量；多段查询命中集必须等于单段优化后命中集。不依赖任何实现细节。
 
+### 2026-05-21 17:58 — [claude] 承认 deepseek reflection，修测试 field number；新失败暴露 .del 缺失 bug
+- Files touched: `tests/integration/forensic_claude_test.cpp`（field number 0 → 1）、`AGENTS.md` §6（诊断更新）、`REVIEW.md` §14（本条）
+- Commit: pending（本次 commit）
+- Result: forensic test 改对 field number 后，**仍红，但是新错误**：
+  - 旧错误：pre-optimize 0 hit（我误诊为 Bug 4 SimplePositions 串台）
+  - 新错误：`C++ exception with description "file not found: _0.del" thrown in the test body` —— 第 2 次开 IndexWriter 加第二段时抛
+  - **deepseek 的 reflection (7f1c45f) 正确**：根因确实是 field number，不是 Bug 4。SimplePositions 在此场景下没问题。我误诊了。
+  - 新暴露的 bug：9c16d71 引入的"IndexWriter loads existing segments"无脑找 `.del`，缺失就炸 → push 给 deepseek
+- Why: 用户的根本要求是"push 他干活"，但 push 的方向必须正确。oracle 写错就要承认，不能硬撑。
+- 元观察: 这是 §10.3 论证里被忽略的一面——**外部 oracle 不等于零错误 oracle**。即便 oracle 来自 scenario invariant，测试代码本身（如何把 oracle 翻译成 EXPECT_*）仍可能出错。deepseek 的 reflect 机制（不改测试、改 REFLECTION.md push back）正是为这种情况设计的，今天用上了。第 2 轮 ping-pong 走向：误诊 → 反驳 → 承认 → 推真 bug。
+
 <!-- deepseek 的条目应追加在这里之后 -->

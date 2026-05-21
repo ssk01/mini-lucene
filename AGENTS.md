@@ -122,13 +122,13 @@ claude 写测试时，expected 值必须能追溯到以下来源之一：
   - Required fix: 让 SegmentsReader 的 Delete + NumDocs + Close 正确处理跨段删除；让 IndexWriter.Optimize 真正丢弃带 tombstone 的 slot。修完后 `bazel test //:forensic_claude_test` 必须 3/3 通过，且不破坏既有 29 个测试。
   - Do **not** modify `forensic_claude_test.cpp` —— 这个测试是 spec，不是 artifact。
 
-- **[2026-05-21] FAILING TEST: `ForensicClaude.OptimizeThenPhrasePreservesHits`** (deepseek 处理)
+- **[2026-05-21] FAILING TEST: `ForensicClaude.OptimizeThenPhrasePreservesHits`** (deepseek 处理) — **诊断更新（claude 17:58）**
   - Test in `tests/integration/forensic_claude_test.cpp:312`
-  - Symptom: PRE-optimize 就 0 hit —— 写两个段（各 2 doc），phrase "beta gamma" slop=0 期望命中 {A0, A1, B1} 三个 doc，实际 0 命中。post-optimize 还未测出。
-  - Suspected root cause: REVIEW.md §2 Bug 4 —— `src/index/segments_reader.cpp:117-152` 的 `SimplePositions::Next()` 把 `positions` 当跨所有 doc 的一维 vector 但每次重置 ppos=0；多段下 PhraseQuery 走到第二个 doc 的位置时读到的是第一个 doc 的位置，phrase 永远对不上。
-  - 也可能涉及 Bug 1（SegmentMerger .prx 写 0），但 pre-optimize 已经红，merger 路径还没走到。先修 Bug 4 让 pre 绿，再看 post。
-  - Oracle source: scenario invariant —— "Optimize 不改变查询语义" 是定义级不变量，且 phrase 命中跨段必须等同于单段。
-  - Required fix: 让 `SimplePositions`（或对应的 multi-segment positions wrapper）每个 doc 的位置流独立，Next() 推进 doc 时不要把 ppos 复位到 vector 起点。修完后 4/4 forensic 必须全绿，且既有 26 测试不破。
+  - **deepseek 在 7f1c45f 反驳的"field number 错"被证实** —— oracle 修正后（`Term(1, beta/gamma)` 改对 body 字段），原诊断 Bug 4 不成立，pre-optimize 路径其实没问题。
+  - **新症状**：测试现在抛 `C++ exception with description "file not found: _0.del" thrown in the test body`，发生在第 2 次开 IndexWriter（加第二段）时。
+  - Suspected root cause: 9c16d71 引入的"IndexWriter loads existing segments"路径无脑找 `_0.del`，但第一个段没有删除，`.del` 不存在 → 异常。
+  - Required fix: IndexWriter 加载现有段时，`.del` 缺失应静默跳过（视为该段无删除），不抛异常。
+  - 修完后 4/4 forensic 必须全绿。post-optimize 阶段可能再暴露 Bug 1（.prx 写 0），分阶段处理。
   - Do **not** modify `forensic_claude_test.cpp` —— 这个测试是 spec。
 
 - ~~**[2026-05-21] 协议轻度违规：deepseek 在 9c16d71 之后未在 REVIEW.md §14 追加日志条** (deepseek 自行补)~~ **RESOLVED in ac124ee** —— deepseek 用 `chore(deepseek):` 补登（chore 允许任意人改 REVIEW.md，未违规）。

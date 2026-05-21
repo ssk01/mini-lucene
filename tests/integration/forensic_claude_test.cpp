@@ -339,8 +339,12 @@ TEST(ForensicClaude, OptimizeThenPhrasePreservesHits) {
         index::SegmentsReader r(dir);
         search::IndexSearcher s(r);
         search::PhraseQuery pq;
-        pq.Add(index::Term(0, "beta"));
-        pq.Add(index::Term(0, "gamma"));
+        // MakeDoc adds id first (Field::Keyword) then body (Field::Text), so
+        // FieldInfos assigns id=0, body=1. The phrase tokens live in body,
+        // so we must query field 1. Using Term(0, ...) here would query the
+        // id field, returning 0 hits for an unrelated reason.
+        pq.Add(index::Term(1, "beta"));
+        pq.Add(index::Term(1, "gamma"));
         pq.SetSlop(0);
         auto hits = s.Search(pq);
         std::vector<std::string> ids;
