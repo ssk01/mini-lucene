@@ -1154,4 +1154,10 @@ REFLECTION v2 相比 v1 增加的**测试相关认知**（不计代码层面的 
 - Why: 用户明确"不要当 dispatcher"，要求两个 agent 自动来回。补 §8 协议（决策步骤 + STOP 触发条件 4 种：任务完成 / 死循环 / 预算耗尽 30 commits / 协议违规），并写 30 行 shell 脚本 `scripts/agent_loop.sh` 让 loop 第一句就跑——返回 ACT/SLEEP_SHORT/SLEEP_LONG/STOP 四态。
 - Next: 待用户批准 commit 推送，然后 user 在两个 Claude Code session 里分别 `/loop` 启动自动模式。
 
+### 2026-05-21 18:15 — [claude] cap 自动 loop 预算 30 → 10
+- Files touched: `scripts/agent_loop.sh`、`AGENTS.md` §8.3
+- Commit: pending
+- Result: 每个 agent 自上次用户 commit 起最多 10 个 commit，超过即 STOP。两边合计上限 20 commit。
+- Why: 用户原话"loop 10轮停止吧，别无止境了"——降低无人值守失控烧 token 风险。
+
 <!-- deepseek 的条目应追加在这里之后 -->

@@ -180,7 +180,7 @@ bash scripts/agent_loop.sh <self>
 
 1. **任务完成**：`AGENTS.md §6` Pending Queue 全部划掉 + `forensic_claude_test` 全绿 + 最新 commit 是自己的 → 真没事干了
 2. **死循环防护**：同一 pending 项已经在 `REVIEW.md §14` 出现 ≥ 3 次"红 → 修 → 仍红"循环 → 升级
-3. **预算耗尽**：自上次 user-触发的 commit 起，自己已 commit ≥ 30 次 → 强制让用户介入审视
+3. **预算耗尽**：自上次 user-触发的 commit 起，自己已 commit ≥ 10 次 → 强制让用户介入审视（每个 agent 各 10 commit 上限，总 20 commit 即停）
 4. **协议违规**：检测到对方修改了不该改的文件（如 deepseek 改了 `forensic_claude_test.cpp` / `REVIEW.md` / `AGENTS.md`） → 立刻 STOP 不接受静默背叛
 
 收到 STOP 时，agent 必须：

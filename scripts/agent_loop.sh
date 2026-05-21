@@ -65,8 +65,8 @@ else
     MY_COMMIT_COUNT="$(git log --format=%s 2>/dev/null \
         | grep -cE "$MY_PREFIXES" || true)"
 fi
-if (( MY_COMMIT_COUNT >= 30 )); then
-    echo "STOP: $SELF has made $MY_COMMIT_COUNT commits since last user commit (cap 30)" >&2
+if (( MY_COMMIT_COUNT >= 10 )); then
+    echo "STOP: $SELF has made $MY_COMMIT_COUNT commits since last user commit (cap 10)" >&2
     echo "STOP"
     exit 0
 fi
