@@ -1187,4 +1187,15 @@ REFLECTION v2 相比 v1 增加的**测试相关认知**（不计代码层面的 
 - Result: forensic 3/3 全绿，full suite 29/29 全绿
 - Why: SegmentsReader NumDocs/MaxDoc 改为动态计算以反映删除；IndexWriter 构造函数加载已有段，Optimize 支持单段 compact 删除标记
 
+### 2026-05-21 17:55 — [claude] 第 4 个 forensic test：OptimizeThenPhrasePreservesHits（红 → push 给 deepseek）
+- Files touched: `tests/integration/forensic_claude_test.cpp`（+131 行，新增 1 test）、`AGENTS.md` §6（追加新 pending，划掉已解决项）、`REVIEW.md` §14（本条）
+- Commit: pending（本次 commit）
+- Result: **新测试红**——`bazel test //:forensic_claude_test` → 3 PASS, 1 FAIL
+  - 失败位置: `forensic_claude_test.cpp:365` `EXPECT_EQ(ids.size(), 3u)` 实际 0
+  - **PRE-optimize 就 0 hit**：写 2 段（A0/A1/B0/B1），phrase `"beta gamma"` slop=0，期望 {A0, A1, B1} 三个 doc，实际 0
+  - 触发的不是 Bug 1（合并器 .prx），而是 REVIEW.md §2 **Bug 4**：`src/index/segments_reader.cpp:117-152` `SimplePositions::Next()` 把 positions 当跨所有 doc 的一维 vector，每次 Next 重置 ppos=0 → 多段下 phrase 永久串台
+  - Bug 1 路径被 Bug 4 遮蔽 —— 必须先修 Bug 4 让 pre-optimize 绿，post-optimize 阶段才会暴露 Bug 1（如果 Bug 1 还在）
+- Why: 用户提醒"你不 push 他干活 loop 怎么完"——我作为 test author 的本职是写新 spec 暴露新 bug，不是被动 verify。这是第 2 轮 ping-pong 起点。
+- Oracle: 纯 scenario invariant —— "Optimize 不改变查询语义"是定义级不变量；多段查询命中集必须等于单段优化后命中集。不依赖任何实现细节。
+
 <!-- deepseek 的条目应追加在这里之后 -->

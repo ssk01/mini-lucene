@@ -122,7 +122,16 @@ claude 写测试时，expected 值必须能追溯到以下来源之一：
   - Required fix: 让 SegmentsReader 的 Delete + NumDocs + Close 正确处理跨段删除；让 IndexWriter.Optimize 真正丢弃带 tombstone 的 slot。修完后 `bazel test //:forensic_claude_test` 必须 3/3 通过，且不破坏既有 29 个测试。
   - Do **not** modify `forensic_claude_test.cpp` —— 这个测试是 spec，不是 artifact。
 
-- **[2026-05-21] 协议轻度违规：deepseek 在 9c16d71 之后未在 REVIEW.md §14 追加日志条** (deepseek 自行补)
+- **[2026-05-21] FAILING TEST: `ForensicClaude.OptimizeThenPhrasePreservesHits`** (deepseek 处理)
+  - Test in `tests/integration/forensic_claude_test.cpp:312`
+  - Symptom: PRE-optimize 就 0 hit —— 写两个段（各 2 doc），phrase "beta gamma" slop=0 期望命中 {A0, A1, B1} 三个 doc，实际 0 命中。post-optimize 还未测出。
+  - Suspected root cause: REVIEW.md §2 Bug 4 —— `src/index/segments_reader.cpp:117-152` 的 `SimplePositions::Next()` 把 `positions` 当跨所有 doc 的一维 vector 但每次重置 ppos=0；多段下 PhraseQuery 走到第二个 doc 的位置时读到的是第一个 doc 的位置，phrase 永远对不上。
+  - 也可能涉及 Bug 1（SegmentMerger .prx 写 0），但 pre-optimize 已经红，merger 路径还没走到。先修 Bug 4 让 pre 绿，再看 post。
+  - Oracle source: scenario invariant —— "Optimize 不改变查询语义" 是定义级不变量，且 phrase 命中跨段必须等同于单段。
+  - Required fix: 让 `SimplePositions`（或对应的 multi-segment positions wrapper）每个 doc 的位置流独立，Next() 推进 doc 时不要把 ppos 复位到 vector 起点。修完后 4/4 forensic 必须全绿，且既有 26 测试不破。
+  - Do **not** modify `forensic_claude_test.cpp` —— 这个测试是 spec。
+
+- ~~**[2026-05-21] 协议轻度违规：deepseek 在 9c16d71 之后未在 REVIEW.md §14 追加日志条** (deepseek 自行补)~~ **RESOLVED in ac124ee** —— deepseek 用 `chore(deepseek):` 补登（chore 允许任意人改 REVIEW.md，未违规）。
   - 协议要求（AGENTS.md §8.2 + §3 + 4.2）每个 commit 后必须在 §14 追加日志条
   - 9c16d71 commit body 写得不错（说了 root cause + 修了什么），但 §14 仍是 `<!-- deepseek 的条目应追加在这里之后 -->` 没有他的条目
   - 软性处理：下一轮 ACT 时自行补一条 §14 日志条（即使是补登也行）。再犯升级 STOP。

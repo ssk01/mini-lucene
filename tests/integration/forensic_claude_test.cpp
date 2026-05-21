@@ -25,6 +25,7 @@
 #include "minilucene/store/ram_directory.h"
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -266,6 +267,128 @@ TEST(ForensicClaude, SloppyPhraseScoreDecreasesWithDistance) {
     // And the ranked list should reflect this ordering.
     EXPECT_EQ(hits->Id(0), 0) << "top hit must be doc0 (exact match)";
     EXPECT_EQ(hits->Id(1), 1) << "second hit must be doc1 (1-gap match)";
+}
+
+// =============================================================================
+// Forensic Test 4: Optimize() must preserve PhraseQuery hits across segments
+// =============================================================================
+//
+// Scenario:
+//   Two separate writer sessions create two segments (mergeFactor large so no
+//   auto-merge happens):
+//     Segment A:
+//       doc A0: id="A0", body="alpha beta gamma delta"     -> contains "beta gamma"
+//       doc A1: id="A1", body="epsilon zeta beta gamma"    -> contains "beta gamma"
+//     Segment B:
+//       doc B0: id="B0", body="alpha mu nu omicron"        -> no match
+//       doc B1: id="B1", body="theta beta gamma iota"      -> contains "beta gamma"
+//
+//   Phrase query: ["beta", "gamma"] with slop=0 (strict adjacency).
+//
+// Oracle (scenario invariant — independent of implementation):
+//   Optimize() is a *physical* operation: it compacts segments and rebuilds
+//   on-disk structures, but by definition it MUST NOT change query semantics.
+//   Therefore:
+//     - PRE-optimize hit count == POST-optimize hit count
+//     - The matching docs, identified by their stored "id" field, must be the
+//       SAME SET both times: {"A0", "A1", "B1"}
+//     - The non-matching doc "B0" must remain absent in both cases
+//
+//   The "id" stored field gives stable identity across docID renumbering that
+//   Optimize() may perform, so we compare *contents*, not slot numbers.
+//
+// This is the canonical test for REVIEW.md §2 Bug 1 (SegmentMerger writing
+// `0` for every position into .prx). With that bug present, after Optimize()
+// every term in the merged segment has position 0, so:
+//   - exact PhraseScorer demands position(gamma) == position(beta)+1
+//   - but both are 0 -> NO matches
+//   - hit count crashes from 3 to 0
+//
+// This test catches:
+//   - SegmentMerger zeroing / dropping position data (.prx corruption)
+//   - SegmentMerger emitting wrong delta encoding for positions
+//   - Phrase query going through a multi-segment reader returning a different
+//     hit set than the same query through a single optimized segment
+TEST(ForensicClaude, OptimizeThenPhrasePreservesHits) {
+    store::RAMDirectory dir;
+
+    // Build segment A: 2 docs.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 10000;  // never auto-merge
+        w.AddDocument(MakeDoc("A0", "alpha beta gamma delta"));
+        w.AddDocument(MakeDoc("A1", "epsilon zeta beta gamma"));
+        w.Close();
+    }
+    // Build segment B: 2 more docs. Re-opening the writer with mergeFactor
+    // large means this creates a second segment, not a merge.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 10000;
+        w.AddDocument(MakeDoc("B0", "alpha mu nu omicron"));
+        w.AddDocument(MakeDoc("B1", "theta beta gamma iota"));
+        w.Close();
+    }
+
+    // Helper: run phrase("beta gamma") and return the set of stored "id"
+    // values for the hits. Set, not list, because Optimize() can legally
+    // renumber docIDs.
+    auto query_ids = [&]() {
+        index::SegmentsReader r(dir);
+        search::IndexSearcher s(r);
+        search::PhraseQuery pq;
+        pq.Add(index::Term(0, "beta"));
+        pq.Add(index::Term(0, "gamma"));
+        pq.SetSlop(0);
+        auto hits = s.Search(pq);
+        std::vector<std::string> ids;
+        if (hits) {
+            for (int i = 0; i < hits->Length(); ++i) {
+                auto doc = r.Document(hits->Id(i));
+                if (doc) {
+                    const auto* f = doc->GetField("id");
+                    if (f) ids.push_back(f->Value());
+                }
+            }
+        }
+        r.Close();
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    };
+
+    // PRE-optimize: must hit A0, A1, B1 across the two segments.
+    const std::vector<std::string> expected = {"A0", "A1", "B1"};
+    {
+        auto ids = query_ids();
+        ASSERT_EQ(ids.size(), 3u)
+            << "pre-optimize: phrase 'beta gamma' must match exactly 3 docs "
+               "across the 2 segments; got " << ids.size();
+        EXPECT_EQ(ids, expected)
+            << "pre-optimize: hit set must be {A0, A1, B1}";
+    }
+
+    // Optimize: physical compaction; query semantics MUST be preserved.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.Optimize();
+        w.Close();
+    }
+
+    // POST-optimize: same hit set.
+    {
+        auto ids = query_ids();
+        ASSERT_EQ(ids.size(), 3u)
+            << "post-optimize: phrase 'beta gamma' must STILL match exactly 3 "
+               "docs (Optimize must not change query semantics); got "
+            << ids.size()
+            << ". If 0, SegmentMerger is likely dropping .prx position data "
+               "(REVIEW.md §2 Bug 1).";
+        EXPECT_EQ(ids, expected)
+            << "post-optimize: hit set must remain {A0, A1, B1}";
+    }
 }
 
 }  // namespace minilucene
