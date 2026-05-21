@@ -800,4 +800,397 @@ TEST(ForensicClaude, DeletedDocsStayDeletedAcrossMerge) {
     r.Close();
 }
 
+// =============================================================================
+// Forensic Test 9: TermQuery is field-scoped — postings on field A must not
+// match queries on field B even when the same term appears in both.
+// =============================================================================
+//
+// Scenario (2 docs, each with two fields "title" and "body"):
+//   d0: title="apple"   body="banana"
+//   d1: title="banana"  body="apple"
+//
+// Lucene assigns field numbers globally by first-encounter order across the
+// segment. d0 adds "title" first then "body", so title→0, body→1. d1 reuses
+// the same numbers.
+//
+// Oracle (Lucene 1.0.1 spec, scenario invariant):
+//   Postings are keyed by (fieldNumber, term). A TermQuery on (field=0,
+//   term="apple") must only match docs whose **title** is "apple" — d0 only.
+//   A TermQuery on (field=1, term="apple") must only match docs whose
+//   **body** is "apple" — d1 only. If either query returns the other doc or
+//   both docs, field isolation is broken (the indexer collapsed field
+//   numbers, the term dictionary keyed on term-only, or the query dropped
+//   the field discriminator).
+//
+// This catches:
+//   - DocumentWriter or FieldInfos collapsing distinct fields onto the same
+//     field number
+//   - TermInfosWriter/Reader keying purely on the term string and ignoring
+//     the field discriminator
+//   - TermQuery scorer iterating all matching docs regardless of which field
+//     produced the posting
+TEST(ForensicClaude, FieldScopedTermDoesNotMatchAcrossFields) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+
+        document::Document d0;
+        d0.Add(document::Field::Text("title", "apple"));
+        d0.Add(document::Field::Text("body",  "banana"));
+        w.AddDocument(d0);
+
+        document::Document d1;
+        d1.Add(document::Field::Text("title", "banana"));
+        d1.Add(document::Field::Text("body",  "apple"));
+        w.AddDocument(d1);
+
+        w.Close();
+    }
+
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    auto run = [&](int field, const std::string& term) {
+        search::TermQuery tq(index::Term(field, term));
+        return s.Search(tq);
+    };
+
+    {  // title:apple -> only d0
+        auto h = run(0, "apple");
+        ASSERT_NE(h, nullptr);
+        ASSERT_EQ(h->Length(), 1)
+            << "title:apple must match exactly d0 (title=\"apple\"); body=apple "
+               "(d1) must be excluded. Got " << h->Length() << " hits.";
+        EXPECT_EQ(h->Id(0), 0);
+    }
+    {  // body:apple -> only d1
+        auto h = run(1, "apple");
+        ASSERT_NE(h, nullptr);
+        ASSERT_EQ(h->Length(), 1)
+            << "body:apple must match exactly d1 (body=\"apple\"); title=apple "
+               "(d0) must be excluded. Got " << h->Length() << " hits.";
+        EXPECT_EQ(h->Id(0), 1);
+    }
+    {  // title:banana -> only d1
+        auto h = run(0, "banana");
+        ASSERT_NE(h, nullptr);
+        ASSERT_EQ(h->Length(), 1)
+            << "title:banana must match exactly d1; body=banana (d0) excluded.";
+        EXPECT_EQ(h->Id(0), 1);
+    }
+    {  // body:banana -> only d0
+        auto h = run(1, "banana");
+        ASSERT_NE(h, nullptr);
+        ASSERT_EQ(h->Length(), 1)
+            << "body:banana must match exactly d0; title=banana (d1) excluded.";
+        EXPECT_EQ(h->Id(0), 0);
+    }
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 10: BooleanQuery (SHOULD-only) — score grows monotonically
+// with the number of matching clauses (coordination factor).
+// =============================================================================
+//
+// Corpus (3 docs, single field "body"):
+//   d0: "a"
+//   d1: "a b"
+//   d2: "a b c"
+//
+// Query: BooleanQuery(SHOULD a, SHOULD b, SHOULD c)
+//
+// Per-doc matched-clause count: d0=1, d1=2, d2=3.
+//
+// Oracle (Lucene 1.0.1 Similarity, hand-derived):
+//   score(d) = coord(overlap, max) * Σ_{t matches} tf(t,d) · idf(t) · norm(d)
+//
+//   With the default `Similarity` in include/minilucene/search/similarity.h:
+//     coord(o, n)        = o / n
+//     idf(df, maxDoc)    = ln(maxDoc / (df + 1)) + 1
+//     tf(freq)           = sqrt(freq)
+//     norm(d)            = 1 / sqrt(len(d))  (then encoded to a byte)
+//
+//   For this corpus (maxDoc=3): df(a)=3, df(b)=2, df(c)=1.
+//     idf(a) = ln(3/4)+1 ≈ 0.712
+//     idf(b) = ln(3/3)+1 = 1.000
+//     idf(c) = ln(3/2)+1 ≈ 1.405
+//
+//   Each matched term has tf=1, so tf=1. Norms: norm(d0)≈1, norm(d1)≈0.707,
+//   norm(d2)≈0.577.
+//
+//   Unweighted sums of matched idfs (before coord+norm):
+//     d0: 0.712               · norm(1.0)    = 0.712
+//     d1: 0.712+1.000 = 1.712 · norm(0.707)  = 1.211
+//     d2: 0.712+1.000+1.405 = 3.117 · norm(0.577) = 1.798
+//
+//   After coord:
+//     d0: (1/3) · 0.712 = 0.237
+//     d1: (2/3) · 1.211 = 0.807
+//     d2: (3/3) · 1.798 = 1.798
+//
+//   So we expect score(d2) > score(d1) > score(d0) by clean margins — even
+//   after norm-byte quantization the relative ordering cannot flip.
+//
+// Oracle bound: monotone in matched-clause count (NOT exact value).
+//
+// This catches:
+//   - SHOULD scorer summing only the first matched clause
+//   - coord() ignored entirely (would make d2 ≈ d0 within norm noise)
+//   - SHOULD clauses requiring all to match (would shrink hit set to 1)
+//   - Boolean scorer dropping high-idf rare terms (would make d2 ≤ d1)
+TEST(ForensicClaude, BooleanShouldMoreMatchingClausesScoresHigher) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        const std::vector<std::string> bodies = {"a", "a b", "a b c"};
+        for (const auto& b : bodies) {
+            document::Document d;
+            d.Add(document::Field::Text("body", b));
+            w.AddDocument(d);
+        }
+        w.Close();
+    }
+
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    search::BooleanQuery bq;
+    bq.Add(std::make_unique<search::TermQuery>(index::Term(0, "a")),
+           search::Occur::SHOULD);
+    bq.Add(std::make_unique<search::TermQuery>(index::Term(0, "b")),
+           search::Occur::SHOULD);
+    bq.Add(std::make_unique<search::TermQuery>(index::Term(0, "c")),
+           search::Occur::SHOULD);
+
+    auto hits = s.Search(bq);
+    ASSERT_NE(hits, nullptr);
+    ASSERT_EQ(hits->Length(), 3)
+        << "SHOULD with at-least-one match: all 3 docs (each contains 'a') "
+           "must be returned.";
+
+    float score_by_doc[3] = {-1.0f, -1.0f, -1.0f};
+    for (int i = 0; i < hits->Length(); ++i) {
+        const int id = hits->Id(i);
+        ASSERT_GE(id, 0);
+        ASSERT_LE(id, 2);
+        score_by_doc[id] = hits->Score(i);
+    }
+    for (int d = 0; d < 3; ++d) {
+        ASSERT_GT(score_by_doc[d], 0.0f)
+            << "doc " << d << " score must be populated (>0)";
+    }
+
+    EXPECT_GT(score_by_doc[2], score_by_doc[1])
+        << "doc d2 matches 3 clauses, d1 matches 2 -> d2 must outscore d1. "
+           "If equal, coord() is not applied. If reversed, scorer dropped a "
+           "high-idf rare-term contribution.";
+    EXPECT_GT(score_by_doc[1], score_by_doc[0])
+        << "doc d1 matches 2 clauses, d0 matches 1 -> d1 must outscore d0. "
+           "If equal/reversed, length-norm overwhelmed coord — but the hand "
+           "derivation in the comment shows d1≈0.807 vs d0≈0.237.";
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 11: DocFreq must equal the count of distinct documents an
+// iteration over TermDocs(term) returns. (Math invariant.)
+// =============================================================================
+//
+// Corpus (4 docs, single field "body"):
+//   d0: "alpha beta"        - alpha 1×, beta 1×
+//   d1: "alpha alpha beta"  - alpha 2×, beta 1×
+//   d2: "alpha gamma"       - alpha 1×, gamma 1×
+//   d3: "gamma delta"       - gamma 1×, delta 1×
+//
+// Per-term ground truth (hand-counted):
+//   alpha: docFreq=3 (d0, d1, d2);   total_freq=4 (1+2+1)
+//   beta:  docFreq=2 (d0, d1);       total_freq=2 (1+1)
+//   gamma: docFreq=2 (d2, d3);       total_freq=2 (1+1)
+//   delta: docFreq=1 (d3);           total_freq=1 (1)
+//
+// Oracle (math invariant, Lucene 1.0.1 contract):
+//   For every term t, IndexReader.DocFreq(t) must equal the number of
+//   iterations of TermDocs(t).Next() that return true. Furthermore the
+//   per-doc Freq() values must sum to total_freq, and each Doc() must be a
+//   distinct, in-order docID.
+//
+// This catches:
+//   - docFreq cached at indexing time and not refreshed (off-by-one across
+//     segments)
+//   - TermDocs skipping or double-counting a doc
+//   - Freq() returning stale value from previous Next() call
+//   - .frq postings written with wrong VarInt delta encoding (Bug 1 cousin)
+TEST(ForensicClaude, DocFreqMatchesTermDocsIteration) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        const std::vector<std::string> bodies = {
+            "alpha beta",
+            "alpha alpha beta",
+            "alpha gamma",
+            "gamma delta",
+        };
+        for (const auto& b : bodies) {
+            document::Document d;
+            d.Add(document::Field::Text("body", b));
+            w.AddDocument(d);
+        }
+        w.Close();
+    }
+
+    index::SegmentsReader r(dir);
+
+    struct TermSpec {
+        std::string term;
+        int expected_doc_freq;
+        int expected_total_freq;
+        std::vector<int> expected_docs;
+    };
+    const std::vector<TermSpec> specs = {
+        {"alpha", 3, 4, {0, 1, 2}},
+        {"beta",  2, 2, {0, 1}},
+        {"gamma", 2, 2, {2, 3}},
+        {"delta", 1, 1, {3}},
+    };
+
+    for (const auto& sp : specs) {
+        index::Term t(0, sp.term);
+        const int df = r.DocFreq(t);
+        EXPECT_EQ(df, sp.expected_doc_freq)
+            << "DocFreq(" << sp.term << ") expected "
+            << sp.expected_doc_freq << ", got " << df;
+
+        auto td = r.Docs(t);
+        ASSERT_NE(td, nullptr) << "Docs(" << sp.term << ") must not be null";
+
+        std::vector<int> seen_docs;
+        int sum_freq = 0;
+        int prev_doc = -1;
+        while (td->Next()) {
+            const int d = td->Doc();
+            const int f = td->Freq();
+            EXPECT_GT(d, prev_doc)
+                << "TermDocs must yield strictly increasing docIDs "
+                   "(prev=" << prev_doc << ", cur=" << d << ")";
+            EXPECT_GT(f, 0)
+                << "Freq() must be > 0 for any returned doc";
+            seen_docs.push_back(d);
+            sum_freq += f;
+            prev_doc = d;
+        }
+        td->Close();
+
+        EXPECT_EQ(static_cast<int>(seen_docs.size()), sp.expected_doc_freq)
+            << "iteration count for " << sp.term << " must equal DocFreq";
+        EXPECT_EQ(seen_docs, sp.expected_docs)
+            << "doc set for " << sp.term << " mismatch";
+        EXPECT_EQ(sum_freq, sp.expected_total_freq)
+            << "sum of Freq() for " << sp.term << " mismatch";
+    }
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 12: NumDocs + MaxDoc contract under delete + optimize.
+// =============================================================================
+//
+// Scenario:
+//   Write 5 docs (single segment), delete docs {1, 3, 4} via reader, then
+//   Optimize.
+//
+// Oracle (Lucene 1.0.1 IndexReader contract):
+//   Before Optimize:
+//     MaxDoc()  = 5   (still includes tombstones)
+//     NumDocs() = 2   (5 minus 3 deletions)
+//     IsDeleted(i) true for i ∈ {1,3,4}, false for i ∈ {0,2}
+//   After Optimize:
+//     MaxDoc()  = 2   (compacted; tombstones dropped)
+//     NumDocs() = 2   (= MaxDoc — no tombstones survive optimize)
+//     IsDeleted(i) false for all i ∈ [0, MaxDoc)
+//
+// Surviving docs (in original order, by id field): "doc-0", "doc-2".
+//
+// This catches:
+//   - NumDocs returning the cached MaxDoc count (REVIEW.md §2 Bug
+//     SegmentsReader.NumDocs not subtracting deletions — the bug that 9c16d71
+//     supposedly fixed; this test locks it in as regression)
+//   - Optimize copying tombstones to the new segment (MaxDoc would still be 5)
+//   - IsDeleted bitmap not cleared after Optimize
+//   - Surviving doc IDs/order corrupted by compaction
+TEST(ForensicClaude, NumDocsMaxDocContractUnderDeleteAndOptimize) {
+    store::RAMDirectory dir;
+
+    // Write 5 docs.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        for (int i = 0; i < 5; ++i) {
+            w.AddDocument(MakeDoc("doc-" + std::to_string(i),
+                                  "body-" + std::to_string(i)));
+        }
+        w.Close();
+    }
+
+    // Delete {1, 3, 4}; assert pre-optimize contract.
+    {
+        index::SegmentsReader r(dir);
+        ASSERT_EQ(r.MaxDoc(), 5);
+        ASSERT_EQ(r.NumDocs(), 5);
+        r.Delete(1);
+        r.Delete(3);
+        r.Delete(4);
+
+        EXPECT_EQ(r.MaxDoc(), 5)
+            << "pre-optimize: MaxDoc keeps tombstones, must remain 5.";
+        EXPECT_EQ(r.NumDocs(), 2)
+            << "pre-optimize: NumDocs = 5 - 3 deletions = 2. If 5, "
+               "SegmentsReader.NumDocs is not subtracting deletions.";
+        EXPECT_TRUE(r.IsDeleted(1));
+        EXPECT_TRUE(r.IsDeleted(3));
+        EXPECT_TRUE(r.IsDeleted(4));
+        EXPECT_FALSE(r.IsDeleted(0));
+        EXPECT_FALSE(r.IsDeleted(2));
+        r.Close();
+    }
+
+    // Optimize -> compact.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.Optimize();
+        w.Close();
+    }
+
+    // Post-optimize: MaxDoc == NumDocs == 2, no tombstones, surviving order
+    // is {doc-0, doc-2}.
+    {
+        index::SegmentsReader r(dir);
+        EXPECT_EQ(r.MaxDoc(), 2)
+            << "post-optimize: MaxDoc must drop tombstones -> 2.";
+        EXPECT_EQ(r.NumDocs(), 2)
+            << "post-optimize: NumDocs must equal MaxDoc (no tombstones).";
+        EXPECT_FALSE(r.IsDeleted(0))
+            << "no slot may be deleted after Optimize.";
+        EXPECT_FALSE(r.IsDeleted(1))
+            << "no slot may be deleted after Optimize.";
+
+        std::vector<std::string> surviving_ids;
+        for (int i = 0; i < r.MaxDoc(); ++i) {
+            auto doc = r.Document(i);
+            ASSERT_NE(doc, nullptr);
+            const document::Field* f = doc->GetField("id");
+            ASSERT_NE(f, nullptr) << "stored id must survive optimize";
+            surviving_ids.push_back(f->Value());
+        }
+        const std::vector<std::string> expected = {"doc-0", "doc-2"};
+        EXPECT_EQ(surviving_ids, expected)
+            << "surviving docs must be {doc-0, doc-2} in original order.";
+        r.Close();
+    }
+}
+
 }  // namespace minilucene

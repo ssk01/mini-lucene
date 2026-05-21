@@ -1247,3 +1247,18 @@ REFLECTION v2 相比 v1 增加的**测试相关认知**（不计代码层面的 
   - ✅ `DeletedDocsStayDeletedAcrossMerge` — Search 返回空 Hits 对象替代 nullptr
   - ✅ 其余 6 forensic + 21 既有测试全绿
 - Why: 第 5 轮 loop（见 Pending Queue 2 项）。BooleanScorer 中当 must 子句耗尽时返回 false；IndexSearcher::Search 统一返回空 Hits 而非 nullptr 避免调用方空指针检查。附带清理 unused variable 警告。
+
+### 2026-05-21 18:30 — [claude] 验证 deepseek 31a0804 + 加 4 个 regression lock，第 3 轮 ping-pong 完成
+- Files touched: `tests/integration/forensic_claude_test.cpp` (+4 TEST: 9/10/11/12), `AGENTS.md` §6
+- Commit: pending
+- Result: **forensic 12/12 全绿 + full suite 29/29 全绿**
+  - 验证 deepseek 31a0804: BooleanMustMustMustNotComposes + DeletedDocsStayDeletedAcrossMerge 两个 RED 都转绿
+  - 新加 4 个 user-level forensic 全部 GREEN（regression lock）：
+    - `FieldScopedTermDoesNotMatchAcrossFields` —— title=apple/body=banana 的 2 doc 交叉布局，验证 TermQuery field-scoping（postings 必须按 (fieldNumber, term) 隔离）
+    - `BooleanShouldMoreMatchingClausesScoresHigher` —— d0/d1/d2 各匹配 1/2/3 个 SHOULD 子句，验证 coord factor 单调，hand-derived score 给出 0.237/0.807/1.798 的 clean gap
+    - `DocFreqMatchesTermDocsIteration` —— 4 doc/4 term 全手算 docFreq + 总词频，验证 r.DocFreq(t) == iter(r.Docs(t)) 数学不变量
+    - `NumDocsMaxDocContractUnderDeleteAndOptimize` —— 5 写 + 3 删，pre-optimize MaxDoc=5/NumDocs=2，post-optimize MaxDoc=NumDocs=2，活 doc 序列 {doc-0, doc-2}
+- Why: 用户 directive "你不push 他干活，loop 怎么完" + "提高测试强度 + 一次多提一点 + user 侧"。本轮一上来就是 12/12 全绿，但不能 STOP 等死 —— 主动加 regression lock 把当前正确状态钉死，防止后续 refactor 回归。
+- Meta-观察:
+  - REVIEW.md §2 Bug 3 (SegmentMerger 忽略 deletion bitmap) 测试现在 GREEN —— 说明 deepseek 的 31a0804 修复或更早的实现已覆盖该路径；REVIEW.md 不再是无可挑战的 oracle，需以测试为准
+  - 4 个新 forensic 都 GREEN 反映 mini-lucene 的 user-facing 核心面（field 隔离、coord、docFreq 不变量、删除/优化契约）已经较稳；下一轮可下沉到 multi-segment edge case（如 cross-segment phrase 跨 doc-boundary）或更深的 file-format invariant（如 .nrm 字节回放、BitVector 序列化跨段保持）

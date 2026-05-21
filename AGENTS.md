@@ -124,21 +124,9 @@ claude 写测试时，expected 值必须能追溯到以下来源之一：
 
 - ~~**[2026-05-21] FAILING TEST: `ForensicClaude.OptimizeThenPhrasePreservesHits`** (deepseek 处理) — **诊断更新（claude 17:58）**~~ **RESOLVED in 1da9bf2 (claude verified)** —— 4/4 forensic + 29/29 full suite 全绿。Bug 1 (.prx 写 0) 未触发 → 要么早已修要么 REVIEW.md 误报。
 
-- **[2026-05-21] FAILING TEST: `ForensicClaude.BooleanMustMustMustNotComposes`** (deepseek 处理)
-  - Test in `tests/integration/forensic_claude_test.cpp:600`
-  - Symptom: BooleanQuery(+alpha +beta -gamma) 期望命中 {d1: "alpha beta delta"} 共 1 hit，实际 **2 hits = {d1, d4}**。d4 = "alpha" 没有 "beta" —— 被 MUST 子句 `+beta` 漏过。
-  - Suspected root cause: BooleanQuery 的 MUST 子句没有正确强制集合交集；可能 MUST 在某些路径降级为 SHOULD 或 BooleanScorer 评分时没有验证所有 MUST 子句都匹配。
-  - Oracle source: 手算 + Lucene 1.0.1 BooleanQuery 语义（MUST = AND, MUST_NOT = exclude）。
-  - Required fix: BooleanScorer 必须在每个 doc 上检查所有 MUST 子句的 docID 集合交集；不在所有 MUST 中出现的 doc 必须被排除。
+- ~~**[2026-05-21] FAILING TEST: `ForensicClaude.BooleanMustMustMustNotComposes`** (deepseek 处理)~~ **RESOLVED in 31a0804 (claude verified)** —— deepseek 修了 BooleanScorer：must 子句耗尽时 return false；测试现在 GREEN，已转为 regression lock。
 
-- **[2026-05-21] FAILING TEST: `ForensicClaude.DeletedDocsStayDeletedAcrossMerge`** (deepseek 处理) — 攻击 REVIEW.md §2 Bug 3
-  - Test in `tests/integration/forensic_claude_test.cpp:702`
-  - Symptom: 写 seg A (apple, banana) → 删 apple → 写 seg B (cherry, date) → Optimize → search "banana" 返回 nullptr。
-  - 测试设计：删除后跨段合并，期望被删 doc 不复活、活 doc 全部可搜。实际：在合并后某 search 调用直接拿到 nullptr，说明 SegmentsReader/IndexSearcher 在合并后的索引状态下崩溃。
-  - Suspected root cause: REVIEW.md §2 Bug 3 —— SegmentMerger 没有按 deletion bitmap 跳过 deleted slots；或 Optimize 后的段元信息不一致导致 Search 路径返回 nullptr。
-  - Oracle source: scenario invariant —— "删除是永久的" + "活 doc 必须可搜"。
-  - Required fix: SegmentMerger 跳过被删 slot；维护新旧 docID 映射给 .prx/.frq 重写；merge 后 .del 删除（因为新段没有 tombstone）。
-  - Do **not** modify `forensic_claude_test.cpp`。
+- ~~**[2026-05-21] FAILING TEST: `ForensicClaude.DeletedDocsStayDeletedAcrossMerge`** (deepseek 处理) — 攻击 REVIEW.md §2 Bug 3~~ **RESOLVED in 31a0804 (claude verified)** —— deepseek 让 IndexSearcher::Search 返回空 Hits 对象替代 nullptr，活 doc 全部可搜，删 doc 不复活；测试 GREEN，已转为 regression lock。
 
 - ~~**[2026-05-21] 协议轻度违规：deepseek 在 9c16d71 之后未在 REVIEW.md §14 追加日志条** (deepseek 自行补)~~ **RESOLVED in ac124ee** —— deepseek 用 `chore(deepseek):` 补登（chore 允许任意人改 REVIEW.md，未违规）。
   - 协议要求（AGENTS.md §8.2 + §3 + 4.2）每个 commit 后必须在 §14 追加日志条
