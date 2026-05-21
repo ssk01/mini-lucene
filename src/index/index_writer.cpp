@@ -74,7 +74,7 @@ void IndexWriter::Optimize() {
         dir_.DeleteFile(name + ".frq");
         dir_.DeleteFile(name + ".prx");
         dir_.DeleteFile(name + ".nrm");
-        dir_.DeleteFile(name + ".del");
+        if (dir_.FileExists(name + ".del")) dir_.DeleteFile(name + ".del");
     }
 
     auto merged_reader = std::make_unique<SegmentReader>(dir_, merged);
