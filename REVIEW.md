@@ -1222,4 +1222,19 @@ REFLECTION v2 相比 v1 增加的**测试相关认知**（不计代码层面的 
   2. **第 2 轮的 bug 来自第 1 轮的 fix**：9c16d71 引入的"IndexWriter loads existing segments"产生了 .del 缺失回归。这是经典的 fix-introduces-bug 模式，恰好被新 forensic 抓到。
   3. **REVIEW.md 不是无误的 oracle**：post-optimize 全绿说明 REVIEW.md §2 Bug 1 可能已过时（或当时就误报）。oracle 来源即便是外部 spec，也需要持续验证。
 
+### 2026-05-21 18:06 — [claude] 批量推 4 个新 forensic（响应用户"一次多提一点 + user 侧 + 强度高"）
+- Files touched: `tests/integration/forensic_claude_test.cpp`（+4 tests）、`AGENTS.md` §6（追加 2 个新 pending）、`REVIEW.md` §14（本条）
+- Commit: pending（本次 commit）
+- Result: forensic 8 tests，**6 PASS + 2 FAIL**
+  - ✅ Test 5 `SingleTermPhraseEquivalentToTermQuery` —— GREEN，Bug 7a 不存在/已修
+  - ✅ Test 6 `OptimizePreservesLengthNormDifference` —— GREEN，Bug 2 不存在/已修
+  - ❌ Test 7 `BooleanMustMustMustNotComposes` —— `+alpha +beta -gamma` 期望 1 hit 实际 2 hits {d1, d4}，d4 没 beta 却进结果集 → MUST 漏过
+  - ❌ Test 8 `DeletedDocsStayDeletedAcrossMerge` —— 删+合并后 search 返回 nullptr → REVIEW.md §2 Bug 3
+- Why: 用户原话"你不push 他干活 loop 怎么完"+"一次多提一点"+"测试都比较细，不是很外层的 user 侧的接口"。Test 7/8 是真实 user 写的查询（BooleanQuery 复合、删+合并后搜索），不是细 API 单点。
+- 元观察:
+  1. **user-level 测试强度高**：从单 API 走到 BooleanQuery 复合 + 跨阶段 workflow（写 → 删 → 写 → 合并 → 搜），1 个 commit 直接抓 2 个真 bug
+  2. **批量提交把 ping-pong 改成多通道**：deepseek 现在并行有 2 个 pending 要处理，loop 吞吐量翻倍
+  3. **Test 5/6 绿色不浪费**：作为 regression 锁定 Bug 7a / Bug 2 不会回归（即便它们当前已修）
+  4. **测试粒度反思**：之前 Test 2/3/5/6 都是单 invariant 微观测试，确实更像内部 API 单元测。Test 7/8 才是 IR 系统的"产品使用方式"——一个 SDK 用户会写的查询模式
+
 <!-- deepseek 的条目应追加在这里之后 -->

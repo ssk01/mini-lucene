@@ -21,13 +21,17 @@
 #include "minilucene/index/term.h"
 #include "minilucene/search/hits.h"
 #include "minilucene/search/index_searcher.h"
+#include "minilucene/search/boolean_clause.h"
+#include "minilucene/search/boolean_query.h"
 #include "minilucene/search/phrase_query.h"
+#include "minilucene/search/term_query.h"
 #include "minilucene/store/ram_directory.h"
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace minilucene {
@@ -393,6 +397,407 @@ TEST(ForensicClaude, OptimizeThenPhrasePreservesHits) {
         EXPECT_EQ(ids, expected)
             << "post-optimize: hit set must remain {A0, A1, B1}";
     }
+}
+
+// =============================================================================
+// Forensic Test 5: Single-term PhraseQuery is semantically equivalent to
+// a TermQuery on the same term.
+// =============================================================================
+//
+// Scenario:
+//   3 docs in a single segment:
+//     doc 0: body = "alpha beta gamma"   (contains "beta")
+//     doc 1: body = "epsilon zeta eta"   (no "beta")
+//     doc 2: body = "lambda beta mu"     (contains "beta")
+//
+//   Run PhraseQuery with a SINGLE term ["beta"] (slop irrelevant).
+//
+// Oracle (semantic invariant — Lucene 1.0.1 PhraseQuery / any reasonable IR):
+//   A phrase of length 1 has no inter-token gap to enforce, so it MUST be
+//   indistinguishable from a TermQuery on that term:
+//     - hit count: 2 (doc 0 and doc 2)
+//     - hit set: {doc 0, doc 2}
+//     - doc 1 (no "beta") MUST NOT appear
+//
+//   We do not assert exact scores (PhraseQuery and TermQuery may differ in
+//   normalization detail), only the HIT SET equivalence.
+//
+// This is the canonical test for REVIEW.md §3 Bug 7a (PhraseQuery early-return
+// false when terms.size() == 1, causing all single-term phrase queries to
+// return 0 results regardless of input). With that bug present the test
+// asserts hit count == 2 but observes 0.
+//
+// This test catches:
+//   - Any code path that short-circuits PhraseQuery for n==1 with empty result
+//   - PhraseQuery requiring strictly >= 2 terms to construct a scorer
+//   - Off-by-one in phrase-length handling
+TEST(ForensicClaude, SingleTermPhraseEquivalentToTermQuery) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        document::Document d0;
+        d0.Add(document::Field::Text("body", "alpha beta gamma"));
+        w.AddDocument(d0);
+        document::Document d1;
+        d1.Add(document::Field::Text("body", "epsilon zeta eta"));
+        w.AddDocument(d1);
+        document::Document d2;
+        d2.Add(document::Field::Text("body", "lambda beta mu"));
+        w.AddDocument(d2);
+        w.Close();
+    }
+
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    // The docs above have only one indexed Field ("body"), so body = field 0.
+    search::PhraseQuery pq;
+    pq.Add(index::Term(0, "beta"));
+    pq.SetSlop(0);
+    auto hits = s.Search(pq);
+    ASSERT_NE(hits, nullptr);
+
+    ASSERT_EQ(hits->Length(), 2)
+        << "single-term phrase ['beta'] must match the same docs as "
+           "TermQuery('beta') = {doc 0, doc 2}; got " << hits->Length()
+        << ". If 0, PhraseQuery is early-returning for n==1 (REVIEW.md §3 "
+           "Bug 7a, src/search/phrase_query.cpp:31).";
+
+    // Collect hit docIDs into a sorted vector for set comparison.
+    std::vector<int> hit_ids;
+    for (int i = 0; i < hits->Length(); ++i) hit_ids.push_back(hits->Id(i));
+    std::sort(hit_ids.begin(), hit_ids.end());
+    const std::vector<int> expected = {0, 2};
+    EXPECT_EQ(hit_ids, expected)
+        << "single-term phrase must hit exactly docs {0, 2}, not doc 1 "
+           "(which contains no 'beta')";
+}
+
+// =============================================================================
+// Forensic Test 6: Optimize() must preserve field-length norm differences
+// =============================================================================
+//
+// Scenario:
+//   Two segments, each with one doc containing exactly one occurrence of
+//   "target":
+//     Segment A, doc A0: body = "target"                   (1 token total)
+//     Segment B, doc B0: body = "target alpha beta gamma delta epsilon zeta"
+//                                                          (7 tokens total)
+//
+//   Both docs have term freq = 1 for "target", but they differ in field
+//   length. Lucene 1.0.1 Similarity.lengthNorm = 1/sqrt(numTerms), so:
+//     - A0 lengthNorm = 1/sqrt(1) = 1.0
+//     - B0 lengthNorm = 1/sqrt(7) ≈ 0.378
+//   This makes score(A0) > score(B0) for TermQuery("target").
+//
+// Oracle (scenario invariant):
+//   Optimize() is a physical compaction; it MUST NOT change scoring
+//   semantics. Therefore the qualitative invariant holds before AND after
+//   optimize:
+//     score(A0) > score(B0) > 0
+//   AND the ratio score(A0)/score(B0) must be roughly preserved (within
+//   a wide tolerance to allow for any norm-encoding round-trip loss).
+//
+// This is the canonical test for REVIEW.md §2 Bug 2 (SegmentMerger writes
+// 0xFF for every (doc, field) norm byte, dropping all length-normalization
+// info). With that bug present, after Optimize() both docs get the SAME
+// decoded norm value, so:
+//   - relative score ordering may flip or tie
+//   - score(A0) ≈ score(B0) instead of score(A0) >> score(B0)
+//
+// This test catches:
+//   - SegmentMerger zeroing / hard-coding .nrm bytes
+//   - Merger writing wrong number of norm bytes (off-by-one over docs)
+//   - lengthNorm encoding lost during multi-segment merge
+TEST(ForensicClaude, OptimizePreservesLengthNormDifference) {
+    store::RAMDirectory dir;
+    // Segment A: short doc.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 10000;
+        document::Document d;
+        d.Add(document::Field::Text("body", "target"));
+        w.AddDocument(d);
+        w.Close();
+    }
+    // Segment B: long doc with the same target term + 6 filler tokens.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 10000;
+        document::Document d;
+        d.Add(document::Field::Text(
+            "body", "target alpha beta gamma delta epsilon zeta"));
+        w.AddDocument(d);
+        w.Close();
+    }
+
+    // Helper: TermQuery("target") and return (scoreA, scoreB) where A is the
+    // shorter doc and B is the longer doc, identified by reading body length.
+    auto get_scores = [&]() {
+        index::SegmentsReader r(dir);
+        search::IndexSearcher s(r);
+        search::TermQuery tq(index::Term(0, "target"));
+        auto hits = s.Search(tq);
+        float score_short = -1.0f;
+        float score_long = -1.0f;
+        if (hits) {
+            for (int i = 0; i < hits->Length(); ++i) {
+                auto doc = r.Document(hits->Id(i));
+                if (!doc) continue;
+                const auto* f = doc->GetField("body");
+                if (!f) continue;
+                const std::string& v = f->Value();
+                if (v == "target") score_short = hits->Score(i);
+                else score_long = hits->Score(i);
+            }
+        }
+        r.Close();
+        return std::pair<float, float>{score_short, score_long};
+    };
+
+    // PRE-optimize: short doc must score strictly higher than long doc.
+    float pre_short = -1.0f, pre_long = -1.0f;
+    {
+        auto p = get_scores();
+        pre_short = p.first;
+        pre_long = p.second;
+        ASSERT_GT(pre_short, 0.0f) << "pre-optimize: short doc must have positive score";
+        ASSERT_GT(pre_long, 0.0f) << "pre-optimize: long doc must have positive score";
+        EXPECT_GT(pre_short, pre_long)
+            << "pre-optimize: shorter doc must score higher (lengthNorm); "
+            << "got short=" << pre_short << " long=" << pre_long;
+    }
+
+    // Optimize: physical compaction. Scoring semantics MUST be preserved.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.Optimize();
+        w.Close();
+    }
+
+    // POST-optimize: same qualitative ordering MUST hold.
+    {
+        auto p = get_scores();
+        float post_short = p.first;
+        float post_long = p.second;
+        ASSERT_GT(post_short, 0.0f) << "post-optimize: short doc must still have positive score";
+        ASSERT_GT(post_long, 0.0f) << "post-optimize: long doc must still have positive score";
+        EXPECT_GT(post_short, post_long)
+            << "post-optimize: shorter doc must STILL score higher than long doc. "
+            << "If short ≈ long after Optimize, SegmentMerger has dropped length "
+            << "norms (REVIEW.md §2 Bug 2, src/index/segment_merger.cpp:107). "
+            << "Got post_short=" << post_short << " post_long=" << post_long;
+    }
+}
+
+// =============================================================================
+// Forensic Test 7: User-level BooleanQuery (+MUST +MUST -MUST_NOT) composes
+// correctly across a small mixed corpus.
+// =============================================================================
+//
+// This is a *user-facing* test: it indexes a small mixed corpus the way a
+// real client would, builds a 3-clause BooleanQuery, and asserts the EXACT
+// hit set against a hand-enumerated oracle.
+//
+// Corpus (6 docs, single field "body"):
+//   d0: "alpha beta gamma"          (alpha, beta, gamma)
+//   d1: "alpha beta delta"          (alpha, beta)         <- the only match
+//   d2: "alpha epsilon zeta"        (alpha)
+//   d3: "beta epsilon"              (beta)
+//   d4: "alpha"                     (alpha)
+//   d5: "delta"                     (none of the three)
+//
+// Query: BooleanQuery
+//   +alpha   (MUST)
+//   +beta    (MUST)
+//   -gamma   (MUST_NOT)
+//
+// Oracle (hand-enumerated set membership, BooleanQuery semantics):
+//   - MUST satisfies AND across MUST clauses.
+//   - MUST_NOT excludes docs containing any matched MUST_NOT term.
+//   Per-doc evaluation:
+//     d0: alpha ✓ beta ✓ gamma ✗ -> excluded by MUST_NOT
+//     d1: alpha ✓ beta ✓ gamma ✗ excluded? -> "gamma" not in d1 -> NOT excluded -> MATCH
+//     d2: alpha ✓ beta ✗ -> excluded by MUST
+//     d3: alpha ✗ -> excluded by MUST
+//     d4: alpha ✓ beta ✗ -> excluded by MUST
+//     d5: alpha ✗ -> excluded by MUST
+//   => hit set = {d1}, count = 1
+//
+// This catches:
+//   - MUST_NOT semantics inverted or ignored
+//   - MUST clauses OR-ed instead of AND-ed
+//   - BooleanScorer requiring MUST clauses to match positionally rather than
+//     by docID set intersection
+//   - Off-by-one in clause count handling
+TEST(ForensicClaude, BooleanMustMustMustNotComposes) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        const std::vector<std::string> bodies = {
+            "alpha beta gamma",   // d0
+            "alpha beta delta",   // d1 (only match)
+            "alpha epsilon zeta", // d2
+            "beta epsilon",       // d3
+            "alpha",              // d4
+            "delta",              // d5
+        };
+        for (const auto& b : bodies) {
+            document::Document d;
+            d.Add(document::Field::Text("body", b));
+            w.AddDocument(d);
+        }
+        w.Close();
+    }
+
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    // Single-field corpus -> body = field 0.
+    search::BooleanQuery bq;
+    bq.Add(std::make_unique<search::TermQuery>(index::Term(0, "alpha")),
+           search::Occur::MUST);
+    bq.Add(std::make_unique<search::TermQuery>(index::Term(0, "beta")),
+           search::Occur::MUST);
+    bq.Add(std::make_unique<search::TermQuery>(index::Term(0, "gamma")),
+           search::Occur::MUST_NOT);
+
+    auto hits = s.Search(bq);
+    ASSERT_NE(hits, nullptr);
+
+    std::vector<int> hit_ids;
+    for (int i = 0; i < hits->Length(); ++i) hit_ids.push_back(hits->Id(i));
+    std::sort(hit_ids.begin(), hit_ids.end());
+
+    const std::vector<int> expected = {1};  // only d1
+    ASSERT_EQ(hits->Length(), 1)
+        << "BooleanQuery(+alpha +beta -gamma) must match exactly 1 doc "
+           "(d1: 'alpha beta delta'). Got " << hits->Length()
+        << " hits: " << (hit_ids.empty() ? std::string("[]") :
+                         [&]() { std::string s = "["; for (int x : hit_ids) s += std::to_string(x) + ","; s.back() = ']'; return s; }());
+    EXPECT_EQ(hit_ids, expected) << "hit set must be exactly {1}";
+}
+
+// =============================================================================
+// Forensic Test 8: Deleted docs MUST stay deleted across a multi-segment merge
+// =============================================================================
+//
+// User-level scenario for REVIEW.md §2 Bug 3 (SegmentMerger ignores the
+// deletion bitmap when copying stored fields / postings, so deleted docs
+// "revive" after a merge):
+//
+// Steps:
+//   1. Write segment A: d0 body="apple", d1 body="banana".
+//   2. Open reader, Delete(0) -> apple is dead.
+//   3. Write segment B (separate writer session): d2 body="cherry",
+//      d3 body="date".
+//   4. Open writer + Optimize() -> forces a merge of A and B.
+//   5. Search for "apple" -> MUST return 0 hits.
+//      Search for "banana", "cherry", "date" -> MUST each return exactly 1 hit.
+//      NumDocs -> MUST equal 3 (4 written, 1 deleted, all survive merge).
+//
+// Oracle (scenario invariant):
+//   Delete is permanent. A merge that "revives" a deleted doc is by
+//   definition broken — there is no version of correct merge semantics
+//   under which deleted docs reappear in queries.
+//
+// This catches:
+//   - SegmentMerger iterating [0, MaxDoc) but failing to skip deleted slots
+//   - .del bitmap not propagated into merged segment
+//   - Stored-field offsets recomputed using NumDocs as a slot count rather
+//     than walking the deletion bitmap (REVIEW.md §2 Bug 3 exact mechanism)
+//   - The "deleted doc revives, scoring is wrong, NumDocs is wrong" trio
+TEST(ForensicClaude, DeletedDocsStayDeletedAcrossMerge) {
+    store::RAMDirectory dir;
+
+    // Segment A: 2 docs.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 10000;
+        document::Document d0;
+        d0.Add(document::Field::Text("body", "apple"));
+        w.AddDocument(d0);
+        document::Document d1;
+        d1.Add(document::Field::Text("body", "banana"));
+        w.AddDocument(d1);
+        w.Close();
+    }
+
+    // Delete "apple" (slot 0 in segment A) via reader.
+    {
+        index::SegmentsReader r(dir);
+        ASSERT_EQ(r.NumDocs(), 2);
+        r.Delete(0);
+        EXPECT_EQ(r.NumDocs(), 1);
+        r.Close();
+    }
+
+    // Segment B: 2 more docs.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 10000;
+        document::Document d2;
+        d2.Add(document::Field::Text("body", "cherry"));
+        w.AddDocument(d2);
+        document::Document d3;
+        d3.Add(document::Field::Text("body", "date"));
+        w.AddDocument(d3);
+        w.Close();
+    }
+
+    // Optimize: forces merge of segments A (with deletion bitmap) and B.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.Optimize();
+        w.Close();
+    }
+
+    // Verify post-merge state: deletion must have been honored.
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    EXPECT_EQ(r.NumDocs(), 3)
+        << "after merge: 3 docs must survive (apple deleted, banana/cherry/date "
+           "remain). If 4, SegmentMerger ignored the deletion bitmap (REVIEW.md "
+           "§2 Bug 3).";
+
+    auto search_term = [&](const std::string& term) {
+        search::TermQuery tq(index::Term(0, term));
+        return s.Search(tq);
+    };
+
+    {
+        auto h = search_term("apple");
+        ASSERT_NE(h, nullptr);
+        EXPECT_EQ(h->Length(), 0)
+            << "'apple' was deleted before merge — must NOT resurrect "
+               "after Optimize. If 1 hit, merger copied a deleted doc.";
+    }
+    {
+        auto h = search_term("banana");
+        ASSERT_NE(h, nullptr);
+        EXPECT_EQ(h->Length(), 1) << "'banana' must survive merge";
+    }
+    {
+        auto h = search_term("cherry");
+        ASSERT_NE(h, nullptr);
+        EXPECT_EQ(h->Length(), 1) << "'cherry' must survive merge";
+    }
+    {
+        auto h = search_term("date");
+        ASSERT_NE(h, nullptr);
+        EXPECT_EQ(h->Length(), 1) << "'date' must survive merge";
+    }
+
+    r.Close();
 }
 
 }  // namespace minilucene
