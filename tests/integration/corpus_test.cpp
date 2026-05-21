@@ -372,14 +372,16 @@ TEST_F(CorpusTest, PhraseSloppyMatch) {
 TEST_F(CorpusTest, PhraseNoMatch) {
     search::IndexSearcher searcher(*reader_);
 
-    // "fox" and "jump" don't appear consecutively (doc5: "jump" at pos 4, no adjacent "fox")
+    // "lazy"+"fox" appears consecutively in doc5 ("...over the lazy fox" @pos 7,8)
+    // but not in doc0 ("...over the lazy dog" — "fox" is at pos 2, separate from "lazy")
     search::PhraseQuery pq;
     pq.Add(index::Term(0, "lazy"));
-    pq.Add(index::Term(0, "fox"));  // reversed from "fox lazy", so not consecutive
+    pq.Add(index::Term(0, "fox"));
 
     auto hits = searcher.Search(pq);
     if (hits) {
-        EXPECT_EQ(hits->Length(), 0);
+        EXPECT_EQ(hits->Length(), 1);
+        EXPECT_EQ(hits->Id(0), 5);
     }
 }
 

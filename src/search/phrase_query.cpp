@@ -28,7 +28,13 @@ public:
 
     bool Next() override {
         while (true) {
-            if (tps_.size() < 2) return false;
+            if (tps_.empty()) return false;
+            if (tps_.size() == 1) {
+                current_doc_ = tps_[0]->Doc();
+                freq_ = tps_[0]->Freq();
+                if (!tps_[0]->Next()) tps_.clear();
+                return true;
+            }
 
             int target = FindTarget();
             if (target < 0) return false;
@@ -38,13 +44,12 @@ public:
 
             CollectPositions(target);
             int matches = CountMatches();
+            AdvancePast(target);
             if (matches > 0) {
                 current_doc_ = target;
                 freq_ = matches;
                 return true;
             }
-
-            AdvancePast(target);
         }
     }
 
@@ -86,12 +91,8 @@ private:
         all_pos_.resize(tps_.size());
         for (size_t i = 0; i < tps_.size(); ++i) {
             all_pos_[i].clear();
-            try {
-                for (int j = 0; j < tps_[i]->Freq(); ++j) {
-                    all_pos_[i].push_back(tps_[i]->NextPosition());
-                }
-            } catch (...) {
-                break;
+            for (int j = 0; j < tps_[i]->Freq(); ++j) {
+                all_pos_[i].push_back(tps_[i]->NextPosition());
             }
         }
     }

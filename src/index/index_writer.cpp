@@ -46,11 +46,12 @@ void IndexWriter::Optimize() {
         seg_names.push_back(seg.name);
     }
 
-    std::string merged = "_0";
+    std::string merged = "_" + std::to_string(segment_counter_++);
     SegmentMerger merger(dir_, seg_names, merged);
     merger.Merge();
 
     for (const auto& name : seg_names) {
+        if (name == merged) continue;
         dir_.DeleteFile(name + ".fnm");
         dir_.DeleteFile(name + ".fdt");
         dir_.DeleteFile(name + ".fdx");

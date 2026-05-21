@@ -29,6 +29,7 @@ public:
     virtual float Norm(int doc, int field_number) = 0;
     virtual std::unique_ptr<document::Document> Document(int doc_id) = 0;
     virtual void Delete(int doc_id) = 0;
+    virtual bool IsDeleted(int doc_id) const = 0;
     virtual int MaxDoc() const = 0;
     virtual void Close() = 0;
 };

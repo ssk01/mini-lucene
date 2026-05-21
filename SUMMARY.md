@@ -1,7 +1,7 @@
 # mini-lucene 项目总结
 
 > 基于 Lucene 1.0.1（Java）的 C++17 重写，Bazel 构建。
-> 27 个测试目标，全部通过（2026-05-20）。
+> 29 个测试目标（含 1 个 manual），全部通过（2026-05-21）。
 
 ---
 
@@ -87,7 +87,7 @@ mini-lucene/
 
 ## 三、测试覆盖
 
-**总计 27 个测试目标，全部通过。**
+**总计 29 个测试目标（含 1 个 manual `missing_features_test`），全部通过（2026-05-21）。**
 
 | 类别 | 测试文件 | 测试数 | 说明 |
 |---|---|---|---|
@@ -110,7 +110,7 @@ mini-lucene/
 | **Cranfield 全文** | `cranfield_test` | 3 | 1400 篇索引 + 9 条检索 |
 | | `cranfield_qrels_test` | 1 | 全文索引验证 + 术语频次 |
 | | `cranfield_ground_truth_test` | 1 | 13 条术语精确命中数 vs Lucene 9 |
-| **回归测试** | `regression_test` | 4 | BooleanScorer 死循环、PhraseScorer 越界、NumDocs 硬编码 |
+| **回归测试** | `regression_test` | 9 | BooleanScorer 死循环、PhraseScorer 越界、NumDocs 硬编码、Close 后防护、合并后短语、删除合并存储、跨段短语、EOF 恢复 |
 | **压力测试** | `stress_test` | 1 | 500 随机文档 + 100 随机查询 |
 | **持久化** | `persistence_test` | 3 | FSDirectory 索引/搜索、删除持久化、多 segment |
 | **性能基准** | `benchmark_test` | 3 | 索引吞吐量、查询延迟、索引大小 |

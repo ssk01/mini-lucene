@@ -30,6 +30,7 @@ public:
     float Norm(int doc, int field_number) override;
     std::unique_ptr<document::Document> Document(int doc_id) override;
     void Delete(int doc_id) override;
+    bool IsDeleted(int doc_id) const override;
     int MaxDoc() const override { return total_docs_; }
     void Close() override;
 

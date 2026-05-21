@@ -9,17 +9,13 @@ namespace index {
 
 TermInfosReader::TermInfosReader(store::Directory& dir, const std::string& segment) {
     auto tii = dir.OpenInput(segment + ".tii");
-    while (true) {
-        try {
-            TiiEntry entry;
-            int field_num = tii->ReadVInt();
-            std::string text = tii->ReadString();
-            entry.term = Term(field_num, text);
-            entry.tis_offset = tii->ReadVLong();
-            tii_entries_.push_back(entry);
-        } catch (...) {
-            break;
-        }
+    while (tii->FilePointer() < tii->Length()) {
+        TiiEntry entry;
+        int field_num = tii->ReadVInt();
+        std::string text = tii->ReadString();
+        entry.term = Term(field_num, text);
+        entry.tis_offset = tii->ReadVLong();
+        tii_entries_.push_back(entry);
     }
     tii->Close();
 
@@ -55,26 +51,26 @@ TermInfo TermInfosReader::Get(const Term& target) {
 
     tis_->Seek(it->tis_offset);
     for (int i = 0; i < 128; ++i) {
-        TermInfo ti;
-        try {
-            int field_num = tis_->ReadVInt();
-            std::string text = tis_->ReadString();
-            Term current(field_num, text);
-            ti.doc_freq = tis_->ReadVInt();
-            ti.freq_pointer = tis_->ReadVLong();
-            ti.prox_pointer = tis_->ReadVLong();
+        if (tis_->FilePointer() >= tis_->Length()) break;
+        int field_num = tis_->ReadVInt();
+        std::string text = tis_->ReadString();
+        Term current(field_num, text);
+        int df = tis_->ReadVInt();
+        int64_t fp = tis_->ReadVLong();
+        int64_t pp = tis_->ReadVLong();
 
-            if (current == target) {
-                return ti;
-            }
+        if (current == target) {
+            TermInfo ti;
+            ti.doc_freq = df;
+            ti.freq_pointer = fp;
+            ti.prox_pointer = pp;
+            return ti;
+        }
 
-            if (!(current < target)) {
-                TermInfo not_found;
-                not_found.doc_freq = 0;
-                return not_found;
-            }
-        } catch (...) {
-            break;
+        if (!(current < target)) {
+            TermInfo not_found;
+            not_found.doc_freq = 0;
+            return not_found;
         }
     }
 

@@ -1,11 +1,16 @@
 #include "minilucene/index/segment_merger.h"
 #include "minilucene/index/segment_reader.h"
 #include "minilucene/index/field_infos.h"
+#include "minilucene/index/fields_writer.h"
+#include "minilucene/index/fields_reader.h"
 #include "minilucene/index/term.h"
 #include "minilucene/index/term_enum.h"
 #include "minilucene/index/term_docs.h"
+#include "minilucene/index/term_positions.h"
 #include "minilucene/index/term_infos_writer.h"
+#include "minilucene/document/document.h"
 #include "minilucene/store/directory.h"
+#include "minilucene/store/index_input.h"
 #include "minilucene/store/index_output.h"
 
 #include <map>
@@ -21,42 +26,55 @@ SegmentMerger::SegmentMerger(store::Directory& dir,
     : dir_(dir), segments_(segments), merged_segment_(merged_segment) {}
 
 void SegmentMerger::Merge() {
-    int total_docs = 0;
-    std::vector<int> doc_starts;
-    for (const auto& seg : segments_) {
-        doc_starts.push_back(total_docs);
-        total_docs += 1;
-    }
-
-    // Collect all unique terms from all segments
-    std::set<Term> all_terms;
     std::vector<std::unique_ptr<SegmentReader>> readers;
+    std::unique_ptr<FieldInfos> merged_fis;
 
     for (const auto& seg : segments_) {
-        auto reader = std::make_unique<SegmentReader>(dir_, seg);
-        auto terms = reader->Terms();
-        while (terms->Next()) {
-            all_terms.insert(terms->Current());
+        auto r = std::make_unique<SegmentReader>(dir_, seg);
+        if (!merged_fis) merged_fis = FieldInfos::Read(dir_, seg);
+        readers.push_back(std::move(r));
+    }
+    if (!merged_fis) return;
+
+    merged_fis->Write(dir_, merged_segment_);
+
+    // Build old→new doc ID mapping per segment (skip deleted docs)
+    std::vector<std::vector<int>> seg_doc_map;
+    int total_live_docs = 0;
+    for (auto& r : readers) {
+        std::vector<int> mapping;
+        for (int d = 0; d < r->MaxDoc(); ++d) {
+            mapping.push_back(r->IsDeleted(d) ? -1 : total_live_docs++);
         }
+        seg_doc_map.push_back(std::move(mapping));
+    }
+
+    // Merge stored fields (.fdt/.fdx), skip deleted docs
+    if (dir_.FileExists(segments_[0] + ".fdt")) {
+        FieldsWriter fw(dir_, merged_segment_, *merged_fis);
+        for (size_t si = 0; si < readers.size(); ++si) {
+            FieldsReader fr(dir_, segments_[si], *merged_fis);
+            for (int d = 0; d < readers[si]->MaxDoc(); ++d) {
+                if (seg_doc_map[si][d] < 0) continue;
+                auto doc = fr.Document(d);
+                if (doc) fw.AddDocument(*doc);
+            }
+            fr.Close();
+        }
+        fw.Close();
+    }
+
+    // Collect all unique terms
+    std::set<Term> all_terms;
+    for (auto& r : readers) {
+        auto terms = r->Terms();
+        while (terms->Next()) all_terms.insert(terms->Current());
         terms->Close();
-        readers.push_back(std::move(reader));
     }
 
-    // Write merged .fnm (collect field names from first segment)
-    if (!segments_.empty()) {
-        SegmentReader first_reader(dir_, segments_[0]);
-        // Write simple .fnm: just "body" field
-        auto fnm = dir_.CreateOutput(merged_segment_ + ".fnm");
-        fnm->WriteVInt(1);
-        fnm->WriteString("body");
-        fnm->WriteByte(0x07);
-        fnm->Close();
-    }
-
-    // Write merged files
+    // Write merged .frq, .prx with proper doc delta + position delta encoding
     auto frq = dir_.CreateOutput(merged_segment_ + ".frq");
     auto prx = dir_.CreateOutput(merged_segment_ + ".prx");
-
     std::vector<std::pair<Term, TermInfo>> merged_terms;
 
     for (const auto& term : all_terms) {
@@ -64,38 +82,55 @@ void SegmentMerger::Merge() {
         ti.freq_pointer = frq->FilePointer();
         ti.prox_pointer = prx->FilePointer();
         ti.doc_freq = 0;
-
-        // Collect postings for this term from all segments
         int prev_doc = 0;
+
         for (size_t si = 0; si < readers.size(); ++si) {
-            auto docs = readers[si]->Docs(term);
-            if (!docs) continue;
-            while (docs->Next()) {
-                int global_doc = docs->Doc() + doc_starts[si];
-                int delta = global_doc - prev_doc;
-                frq->WriteVInt(delta);
-                frq->WriteVInt(docs->Freq());
-                prev_doc = global_doc;
+            auto tp = readers[si]->Positions(term);
+            if (!tp) continue;
+            while (tp->Next()) {
+                int local_doc = tp->Doc();
+                int new_doc = seg_doc_map[si][local_doc];
+                if (new_doc < 0) continue;
+
+                frq->WriteVInt(new_doc - prev_doc);
+                int freq = tp->Freq();
+                frq->WriteVInt(freq);
+                prev_doc = new_doc;
                 ++ti.doc_freq;
-                prx->WriteVInt(0);
+
+                int prev_pos = 0;
+                int abs_pos = 0;
+                for (int i = 0; i < freq; ++i) {
+                    abs_pos += tp->NextPosition();
+                    prx->WriteVInt(abs_pos - prev_pos);
+                    prev_pos = abs_pos;
+                }
             }
         }
-
         merged_terms.push_back({term, ti});
     }
-
     frq->Close();
     prx->Close();
 
+    // Write .tis, .tii
     TermInfosWriter tis_writer(dir_, merged_segment_);
-    for (const auto& [term, ti] : merged_terms) {
-        tis_writer.Add(term, ti);
-    }
+    for (const auto& [term, ti] : merged_terms) tis_writer.Add(term, ti);
     tis_writer.Close();
 
+    // Copy .nrm bytes from source segments for live docs only
     auto nrm = dir_.CreateOutput(merged_segment_ + ".nrm");
-    for (int d = 0; d < total_docs; ++d) {
-        nrm->WriteByte(255);
+    int num_fields = merged_fis->Size();
+    for (size_t si = 0; si < readers.size(); ++si) {
+        auto& r = readers[si];
+        auto src_nrm = dir_.OpenInput(segments_[si] + ".nrm");
+        for (int d = 0; d < r->MaxDoc(); ++d) {
+            if (r->IsDeleted(d)) continue;
+            for (int f = 0; f < num_fields; ++f) {
+                src_nrm->Seek((static_cast<int64_t>(d) * num_fields + f));
+                nrm->WriteByte(src_nrm->ReadByte());
+            }
+        }
+        src_nrm->Close();
     }
     nrm->Close();
 }

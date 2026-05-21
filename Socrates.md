@@ -18,4 +18,32 @@
 详细拆分、每阶段交付物、单测用例清单、评分建议见 `PROJECT.md`。
 (2026-05-20)
 
+### Q: REVIEW.md 指出那么多 bug 的根因是什么？
+1. **14周压成4小时** — AI 一遍过，没人 review，没时间想"什么情况下会错"
+2. **catch(...) 系统性反模式** — 7 处 catch(...) 当 EOF 判断，掩盖了 3 个 P0 bug
+3. **测试 oracle 来自实现** — AI 写测试时把当前输出当 expected，实现错了测试也跟着错
+
+两类 bug：7 个"抄错写漏"（有人 review 一眼能看见），3 个"设计缺陷"（需要深度理解语言/框架/数据结构才能避免）。
+
+REVIEW.md 本身有 1 个误报（Bug 6 overlap_max — Java 也是 `must+should`，原公式正确）。
+(2026-05-21)
+
+### Q: 修复中发现的最深的 bug 是什么？
+**SegmentTermPositions::Next() 不跳过未消费的 .prx 位置。** 这是真正的根因，藏在所有 catch(...) 下面：
+
+- PhraseScorer 调用 AlignAll → 在某个 term 上调用 Next()，但上一个 doc 的位置尚未消费
+- Next() 只推进 .frq，不动 .prx → .prx 和 .frq 失同步
+- CollectPositions 从 .prx 读到的位置属于上一个 doc
+- CountMatches 找不到匹配 → AdvancePast → 又调用 Next() → 继续失同步
+- 直到 .prx 读到 EOF，catch(...) 吃掉异常
+
+修复：在 Next() 开头跳过所有剩余未消费的 `remaining_positions_`，确保每次 Next() 后 .prx 都指向新 doc 的第一个位置。
+(2026-05-21)
+
+### Q: 怎么保证修复是正确的？
+写反向测试（mutation test）：先假设 bug 还在，写一个测试让它红；修完代码让测试变绿。新增 9 个反向测试 + 4 个扩展回归测试，29/29 通过。
+
+反向测试的 expected 来自手算或外部规格，不来自当前实现。如果以后有人不小心改坏，这些测试会亮红。
+(2026-05-21)
+
 <!-- 以下继续记录 -->

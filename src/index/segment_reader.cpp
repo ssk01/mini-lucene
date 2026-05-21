@@ -117,6 +117,14 @@ SegmentTermPositions::~SegmentTermPositions() {
 }
 
 bool SegmentTermPositions::Next() {
+    // Skip any unconsumed positions from the previous doc to keep .prx in sync.
+    // remaining_positions_ may be 0 (fully consumed) or > 0 (partially consumed);
+    // it should never be negative, but guard against it to prevent infinite loops.
+    while (remaining_positions_ > 0) {
+        prx_->ReadVInt();
+        --remaining_positions_;
+    }
+    remaining_positions_ = 0;
     while (remaining_ > 0) {
         try {
             int delta = frq_->ReadVInt();
@@ -125,7 +133,6 @@ bool SegmentTermPositions::Next() {
             --remaining_;
             if (!deleted_docs_ || !deleted_docs_->Get(doc_)) {
                 remaining_positions_ = freq_;
-                // prx position for this doc is at the right offset already
                 return true;
             }
             // Skip positions for deleted doc
@@ -177,6 +184,10 @@ void SegmentReader::Delete(int doc_id) {
         deleted_docs_ = std::make_unique<util::BitVector>(num_docs_);
     }
     deleted_docs_->Set(doc_id);
+}
+
+bool SegmentReader::IsDeleted(int doc_id) const {
+    return deleted_docs_ && deleted_docs_->Get(doc_id);
 }
 
 int SegmentReader::NumDocs() const {

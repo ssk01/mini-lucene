@@ -1,0 +1,13 @@
+Checks: >
+    bugprone-*,
+    performance-*,
+    cppcoreguidelines-*,
+    -cppcoreguidelines-owning-memory,
+    -cppcoreguidelines-pro-type-vararg,
+    -cppcoreguidelines-avoid-magic-numbers
+WarningsAsErrors: ""
+HeaderFilterRegex: ""
+AnalyzeTemporaryDtors: false
+CheckOptions:
+  - key: bugprone-suspicious-string-compare.WarnOnImplicitComparison
+    value: 0

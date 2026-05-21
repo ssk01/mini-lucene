@@ -116,35 +116,37 @@ std::unique_ptr<TermDocs> SegmentsReader::Docs(const Term& term) {
 
 std::unique_ptr<TermPositions> SegmentsReader::Positions(const Term& term) {
     struct SimplePositions : TermPositions {
-        std::vector<int> doc_ids, freqs, positions;
+        std::vector<int> doc_ids, freqs, positions, pos_starts;
         size_t pos = 0;
-        size_t ppos = 0;
         int doc_ = -1, freq_ = 0;
+
         bool Next() override {
             if (pos >= doc_ids.size()) return false;
             doc_ = doc_ids[pos];
             freq_ = freqs[pos];
-            ppos = 0;
             ++pos;
             return true;
         }
         int Doc() const override { return doc_; }
         int Freq() const override { return freq_; }
         int NextPosition() override {
-            return positions[ppos++];
+            return positions[pos_starts[pos - 1] + freqs[pos - 1] - (freq_--)];
         }
         void Close() override {}
     };
 
     auto result = std::make_unique<SimplePositions>();
+    int pos_offset = 0;
     for (size_t si = 0; si < readers_.size(); ++si) {
         auto tp = readers_[si]->Positions(term);
         if (!tp) continue;
         while (tp->Next()) {
             result->doc_ids.push_back(tp->Doc() + doc_starts_[si]);
             result->freqs.push_back(tp->Freq());
+            result->pos_starts.push_back(pos_offset);
             for (int i = 0; i < tp->Freq(); ++i) {
                 result->positions.push_back(tp->NextPosition());
+                ++pos_offset;
             }
         }
     }
@@ -164,6 +166,11 @@ std::unique_ptr<document::Document> SegmentsReader::Document(int doc_id) {
 void SegmentsReader::Delete(int doc_id) {
     int si = SegIdx(doc_id);
     readers_[si]->Delete(LocalDoc(doc_id, si));
+}
+
+bool SegmentsReader::IsDeleted(int doc_id) const {
+    int si = SegIdx(doc_id);
+    return readers_[si]->IsDeleted(LocalDoc(doc_id, si));
 }
 
 void SegmentsReader::Close() {

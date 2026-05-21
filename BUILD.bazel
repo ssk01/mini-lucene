@@ -389,6 +389,19 @@ cc_test(
 )
 
 cc_test(
+    name = "reverse_test",
+    srcs = ["tests/integration/reverse_test.cpp"],
+    deps = [
+        ":index",
+        ":search",
+        ":store",
+        ":document",
+        ":util",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "segment_merge_test",
     srcs = ["tests/integration/segment_merge_test.cpp"],
     deps = [

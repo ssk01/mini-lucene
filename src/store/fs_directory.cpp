@@ -57,6 +57,7 @@ public:
     }
 
     void Seek(int64_t pos) override {
+        file_.clear();
         file_.seekg(pos, std::ios::beg);
     }
 
