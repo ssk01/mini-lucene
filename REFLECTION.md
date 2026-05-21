@@ -226,10 +226,31 @@ REVIEW.md §10 有一段话一针见血：
 | `reverse_test::BooleanCoordScoring` expected 修正 | ✅ 改为 Java 公式 oracle |
 | `exact_score_test::BooleanCoord` 注释修正 | ✅ |
 | REFLECTION.md 虚假数据删除 | ✅ |
+| `reverse_test` 新增 7 个 forensic 测试 | ✅ 全部 29/29 通过 |
 | **真正待办**：写 `tools/DumpIndex.java` 提供 Java oracle | 🔲 |
 | **真正待办**：实测 mutation testing | 🔲 |
 
-### 4.4 一句话
+### 4.4 修复后测试套构成（2026-05-21 终版）
+
+| 类别 | 数量 | Oracle 来源 | 覆盖 |
+|------|------|-------------|------|
+| 原有测试（单元+集成） | 19 | 混合（部分手算、部分看实现） | 基本功能 |
+| `regression_test`（扩展） | 9 | 场景不变量 | 已知 bug 不回退 |
+| `reverse_test` | 16 | 7 个 forensic（手算/不变量）+ 9 个反向 | 每个已修 bug 的回归保护 |
+| `missing_features_test` | 1 | manual | 待实现功能占位 |
+
+**16 个 reverse tests 的 oracle 构成：**
+- **手算公式**：MergePositionDeltasExact、MergePreservesNorms、BooleanCoordScoring、CoordWithMustAndShould、MultiSegmentPositionByPosition（5 个）
+- **数学不变量**：MergeInvariantTotalTermFreq、OptimizeIdempotentDeep、PositionsMonotonicWithinDoc、SearchResultsSortedByScore（4 个）
+- **场景不变量**：MergePreservesPositions、MergeSkipsDeleted、MultiSegmentPositionsNoCrosstalk、OptimizeIdempotent、PhraseSingleTermMatches、FSDirectorySeekAfterEOFSafe（6 个）
+- **Java 格式对照**：BitVectorRoundTrip（1 个）
+
+**零个测试的 oracle 来自当前实现。**
+
+如果以后有人把 Bug 1（prx->WriteVInt(0)）改回来，以下测试会同时变红：
+`MergePreservesPositions` + `MergePositionDeltasExact` + `OptimizeThenPhrase` + `OptimizeIdempotentDeep`
+
+### 4.5 一句话
 
 > **REVIEW.md 最有价值的部分不是它发现了 9 个代码 bug——而是它发现了我的反思文档也中了同一个"用自己的输出当 oracle"的毒。**
 > 如果反思文档本身都不反思，那"反思"两个字就是个笑话。
