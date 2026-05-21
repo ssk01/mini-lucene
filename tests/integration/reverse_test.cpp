@@ -296,14 +296,15 @@ TEST(ReverseTest, OptimizeIdempotent) {
 }
 
 // ===== BooleanQuery coord must match Java Lucene 1.0.1 =====
-// Java BooleanScorer counts all non-prohibited clauses: maxCoord = must + should
-// coord = overlap / maxCoord, capped at 1.0
+// Java BooleanScorer: maxCoord = 1 (初始值) + 每个非禁止子句
+// 2 SHOULD clauses → maxCoord = 1 + 2 = 3
+// coord = overlap / maxCoord
 TEST(ReverseTest, BooleanCoordScoring) {
     // doc0: "fox" (1 token)
     // doc1: "fox jumps" (2 tokens)
-    // 2 SHOULD clauses: max_overlap = 0 + 2 = 2
-    // doc0: fox at doc0 (overlap=1). coord=1/2=0.5
-    // doc1: fox+jumps at doc1 (overlap=2). coord=2/2=1.0
+    // 2 SHOULD clauses: max_overlap = 1 + 2 = 3
+    // doc0: fox at doc0 (overlap=1). coord=1/3≈0.333
+    // doc1: fox+jumps at doc1 (overlap=2). coord=2/3≈0.667
     //
     // idf(fox) = log(2/(2+1))+1 = 0.595
     // idf(jumps) = log(2/(1+1))+1 = 1.0
@@ -312,10 +313,8 @@ TEST(ReverseTest, BooleanCoordScoring) {
     // TermScore("fox", doc1) = sqrt(1) × 0.595² × 0.706(norm) = 0.250
     // TermScore("jumps", doc1) = sqrt(1) × 1.0² × 0.706(norm) = 0.706
     //
-    // BooleanScore(doc0) = 0.354 × 0.5 = 0.177
-    //   which is TermScore("fox, doc0") / 2
-    // BooleanScore(doc1) = (0.250 + 0.706) × 1.0 = 0.956
-    //   which is sum of TermScores for doc1
+    // BooleanScore(doc0) = 0.354 × 0.333 = 0.118
+    // BooleanScore(doc1) = (0.250 + 0.706) × 0.667 = 0.637
 
     store::RAMDirectory dir;
     auto a = std::make_unique<analysis::SimpleAnalyzer>();
@@ -335,15 +334,13 @@ TEST(ReverseTest, BooleanCoordScoring) {
     ASSERT_NE(hits, nullptr);
     ASSERT_EQ(hits->Length(), 2);
     EXPECT_EQ(hits->Id(0), 1) << "Doc1 (matches both) should rank first";
-    EXPECT_EQ(hits->Id(1), 0);
+    EXPECT_EQ(hits->Id(1), 0) << "Doc0 (matches one) ranks second";
 
-    // Doc1 matches both clauses → scores higher than doc0
-    EXPECT_GT(hits->Score(0), hits->Score(1)) << "doc1 (matches both) > doc0";
-    // doc0 has coord=1/2=0.5 applied to TermScore("fox", doc0) = 0.354 * 0.5 = 0.177
-    EXPECT_NEAR(hits->Score(1), 0.177f, 0.01f);
-    // doc1 has coord=2/2=1.0 applied to sum of TermScores
-    // = (TermScore("fox", doc1) + TermScore("jumps", doc1)) * 1.0 = 0.250 + 0.706 = 0.956
-    EXPECT_NEAR(hits->Score(0), 0.956f, 0.01f);
+    // Doc1 matches both → higher score
+    EXPECT_GT(hits->Score(0), hits->Score(1));
+    // Oracle from Java BooleanScorer formula (maxCoord = 1 + 2 = 3)
+    EXPECT_NEAR(hits->Score(1), 0.118f, 0.01f);
+    EXPECT_NEAR(hits->Score(0), 0.637f, 0.01f);
 }
 
 // ===== Bug 7a: Single-term PhraseQuery must work =====

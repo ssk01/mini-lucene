@@ -37,7 +37,7 @@ std::unique_ptr<Scorer> BooleanQuery::CreateScorer(index::IndexReader& reader) c
 
     if (must.empty() && should.empty()) return nullptr;
 
-    int overlap_max = static_cast<int>(must.size() + should.size());
+    int overlap_max = static_cast<int>(must.size() + should.size() + 1);
 
     return std::make_unique<BooleanScorer>(
         std::move(must), std::move(should), std::move(must_not),

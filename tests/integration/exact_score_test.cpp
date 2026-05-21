@@ -110,12 +110,12 @@ TEST(Scoring, BooleanCoord) {
     // doc0: "fox"         → 1 token
     // doc1: "fox jumps"   → 2 tokens
     // Query: +fox jumps (MUST fox, SHOULD jumps)
-    // doc0: fox freq=1, no jumps. overlap=1 (must). coord=1/2=0.5
-    // doc1: fox freq=1, jumps freq=1. overlap=2. coord=2/2=1.0
+    // Java BooleanScorer: maxCoord 初始化为 1，每个非禁止子句 +1
+    // maxCoord = 1 + 1 (MUST) + 1 (SHOULD) = 3
+    // doc0: fox freq=1, no jumps. overlap=1 (must). coord=1/3≈0.333
+    // doc1: fox freq=1, jumps freq=1. overlap=2. coord=2/3≈0.667
     // idf(fox)=log(2/(2+1))+1=log(0.667)+1=-0.405+1=0.595
     // idf(jumps)=log(2/(1+1))+1=log(1)+1=1.0
-    // score(doc0) = sqrt(1) × 0.595² × 0.5 × 1/sqrt(1) = 0.354 × 0.5 = 0.177
-    // score(doc1) = 1.0 × (sqrt(1)×0.595²×1/sqrt(2) + sqrt(1)×1²×1/sqrt(2))
 
     store::RAMDirectory dir;
     auto a = std::make_unique<analysis::SimpleAnalyzer>();
