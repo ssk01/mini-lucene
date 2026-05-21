@@ -179,14 +179,16 @@ TEST(MissingFeature, HitCollectorCallback) {
     EXPECT_FLOAT_EQ(c.last_score, 0.5f);
 }
 
-// ===== 7. SegmentMergeQueue — proper merge =====
-TEST(MissingFeature, SegmentMergeQueueOrdersByTerm) {
+// ===== 7. SegmentMergeQueue — basic ops =====
+TEST(MissingFeature, SegmentMergeQueueBasicOps) {
     index::SegmentMergeQueue queue(10);
     EXPECT_EQ(queue.Size(), 0) << "empty queue should have size 0";
 
-    // Can't easily construct SegmentMergeInfo (needs reader/termEnum)
-    // Test basic queue operations
-    EXPECT_TRUE(true);
+    // Can't test ordering without constructing SegmentMergeInfo objects
+    // (needs SegmentReader + TermEnum). The empty queue test at least
+    // verifies construction and Size().
+    // TODO: Add ordering test once SegmentMergeInfo construction is possible
+    // in a test context.
 }
 
 // ===== 6. FilteredTermEnum — filtered enumeration =====
@@ -256,10 +258,11 @@ TEST(MissingFeature, WildcardTermEnumMatchesPattern) {
     EXPECT_TRUE(found_cat) << "WildcardTermEnum should match 'c*t' with 'cat'";
 }
 
-// ===== 8. StandardFilter — token normalization =====
-TEST(MissingFeature, StandardFilterNormalizesTokens) {
-    analysis::StandardFilter sf(nullptr);
-    EXPECT_TRUE(true) << "StandardFilter should compile";
+// ===== 8. StandardFilter — pass-through stub =====
+// StandardFilter is currently a no-op. Normalization is inlined into
+// StandardTokenizer instead. Construction should not throw.
+TEST(MissingFeature, StandardFilterConstructs) {
+    EXPECT_NO_THROW(analysis::StandardFilter sf(nullptr));
 }
 
 }  // namespace minilucene
