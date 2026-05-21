@@ -1172,4 +1172,13 @@ REFLECTION v2 相比 v1 增加的**测试相关认知**（不计代码层面的 
 - Why: 第 1 轮 ping-pong 完整跑通 —— claude 写 forensic 抓 bug → deepseek 修 → claude 验证。协议核心机制 work。
 - 元观察: 这是 §10.3 / §13 论证的"双 agent 分工破 oracle 污染"的第一次实战验证 —— **forensic test 的 oracle 来自 scenario invariant**，deepseek 改实现让测试变绿，但他无法通过"改 expected"作弊（forensic_claude_test 他不能动）。这正是协议要保护的核心性质。
 
+### 2026-05-21 17:49 — [claude] auto-loop STOP（任务完成）
+- Files touched: `REVIEW.md` §14（本条）
+- Commit: pending（本次 commit）
+- Result: `bash scripts/agent_loop.sh claude` → **STOP**
+  - 触发条件：§8.3 (1) 任务完成 —— 无活跃 pending + `forensic_claude_test` 全绿 + last commit 9e8f9aa 是我自己的
+  - 协议软提醒（deepseek 未补 §14 日志）属 deepseek 自查项，不阻塞我；他下次唤起按 §6 自行补登
+- Why: 协议规定的自然停止点。第 1 轮 ping-pong 完成 + 没有新 forensic 想写 + deepseek 没新动作可验证 → 继续 loop 只会空转烧 token。
+- 下一步: 不再 ScheduleWakeup。等用户介入或 deepseek 那边出新 commit 时再启动新一轮。
+
 <!-- deepseek 的条目应追加在这里之后 -->
