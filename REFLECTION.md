@@ -226,7 +226,10 @@ REVIEW.md §10 有一段话一针见血：
 | `reverse_test::BooleanCoordScoring` expected 修正 | ✅ 改为 Java 公式 oracle |
 | `exact_score_test::BooleanCoord` 注释修正 | ✅ |
 | REFLECTION.md 虚假数据删除 | ✅ |
-| `reverse_test` 新增 7 个 forensic 测试 | ✅ 全部 29/29 通过 |
+| `reverse_test` 新增 7 个 forensic 测试 | ✅ 全部通过，后经 2 轮修复 |
+| `MergeSkipsDeleted` 名实不符 | ✅ 改名 `MergeTwoSingleDocSegments`，新增 `MergeWithDeletedDocs`（正确带 Delete） |
+| `PositionsMonotonicWithinDoc`（VInt 零强度） | ✅ 替换为 `PositionsExactValues`（手算每个 delta 精确值） |
+| `SearchResultsSortedByScore`（仅必要不充分） | ✅ 追加手算分数值断言 |
 | **真正待办**：写 `tools/DumpIndex.java` 提供 Java oracle | 🔲 |
 | **真正待办**：实测 mutation testing | 🔲 |
 

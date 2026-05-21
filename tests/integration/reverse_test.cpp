@@ -170,11 +170,10 @@ TEST(ReverseTest, MergePreservesNorms) {
     EXPECT_GT(hits->Score(0), hits->Score(1));
 }
 
-// ===== Bug 3: SegmentMerger must skip deleted docs =====
-TEST(ReverseTest, MergeSkipsDeleted) {
+// ===== Merge 结果正确（两个单 doc 段） =====
+TEST(ReverseTest, MergeTwoSingleDocSegments) {
     store::RAMDirectory dir;
 
-    // Use single Text field (body) to match original segment_merge_test
     {
         auto a1 = std::make_unique<analysis::SimpleAnalyzer>();
         index::DocumentWriter dw(dir, *a1);
@@ -195,6 +194,63 @@ TEST(ReverseTest, MergeSkipsDeleted) {
     EXPECT_EQ(r.NumDocs(), 2);
     EXPECT_EQ(r.DocFreq(index::Term(0, "alpha")), 1);
     EXPECT_EQ(r.DocFreq(index::Term(0, "beta")), 1);
+}
+
+// ===== Merge 跳过已删文档（Bug 3 回归保护） =====
+TEST(ReverseTest, MergeWithDeletedDocs) {
+    store::RAMDirectory dir;
+
+    {
+        auto a1 = std::make_unique<analysis::SimpleAnalyzer>();
+        index::DocumentWriter dw(dir, *a1);
+        dw.AddDocument(DocWithId("1", "alpha"));
+        dw.AddDocument(DocWithId("2", "beta"));
+        dw.Flush("_a");
+    }
+    {
+        auto a2 = std::make_unique<analysis::SimpleAnalyzer>();
+        index::DocumentWriter dw(dir, *a2);
+        dw.AddDocument(DocWithId("3", "gamma"));
+        dw.AddDocument(DocWithId("4", "delta"));
+        dw.Flush("_b");
+    }
+
+    // Delete doc 0 from _a ("alpha") and doc 1 from _b ("delta")
+    {
+        index::SegmentReader r(dir, "_a");
+        r.Delete(0);
+        r.Close();
+    }
+    {
+        index::SegmentReader r(dir, "_b");
+        r.Delete(1);
+        r.Close();
+    }
+
+    index::SegmentMerger merger(dir, {"_a", "_b"}, "_merged");
+    merger.Merge();
+
+    index::SegmentReader r(dir, "_merged");
+    // Only 2 live docs survive
+    EXPECT_EQ(r.NumDocs(), 2);
+
+    // Verify stored fields: only id=2 ("beta") and id=3 ("gamma") survive
+    auto doc0 = r.Document(0);
+    ASSERT_NE(doc0, nullptr);
+    EXPECT_EQ(doc0->GetField("id")->Value(), "2");
+
+    auto doc1 = r.Document(1);
+    ASSERT_NE(doc1, nullptr);
+    EXPECT_EQ(doc1->GetField("id")->Value(), "3");
+
+    // Deleted docs' terms should have doc_freq=0
+    // DocWithId adds Keyword("id", field 0) + Text("body", field 1)
+    // Terms are in field 1 ("body")
+    EXPECT_EQ(r.DocFreq(index::Term(1, "alpha")), 0);
+    EXPECT_EQ(r.DocFreq(index::Term(1, "delta")), 0);
+    // Live docs' terms should have doc_freq=1
+    EXPECT_EQ(r.DocFreq(index::Term(1, "beta")), 1);
+    EXPECT_EQ(r.DocFreq(index::Term(1, "gamma")), 1);
 }
 
 // ===== Bug 4: Multi-segment positions must not cross-talk =====
@@ -727,8 +783,8 @@ TEST(ReverseTest, OptimizeIdempotentDeep) {
     EXPECT_EQ(term_set1, term_set2) << "term set must be stable after second optimize";
 }
 
-// ===== Forensic 6: Term 内位置严格单调递增 =====
-TEST(ReverseTest, PositionsMonotonicWithinDoc) {
+// ===== Forensic 6: 位置精确值校验（已知输入 → 手算 expected）=====
+TEST(ReverseTest, PositionsExactValues) {
     store::RAMDirectory dir;
     auto a = std::make_unique<analysis::SimpleAnalyzer>();
     index::IndexWriter w(dir, std::move(a));
@@ -739,27 +795,48 @@ TEST(ReverseTest, PositionsMonotonicWithinDoc) {
     w.Close();
 
     index::SegmentReader r(dir, "_0");
-    auto terms = r.Terms();
-    ASSERT_NE(terms, nullptr);
 
-    while (terms->Next()) {
-        auto tp = r.Positions(terms->Current());
-        if (!tp) continue;
-        while (tp->Next()) {
-            for (int i = 0; i < tp->Freq(); ++i) {
-                int delta = tp->NextPosition();
-                EXPECT_GE(delta, 0) << "position delta must be >= 0: term="
-                    << terms->Current().Text() << " doc=" << tp->Doc() << " pos=" << i;
-            }
-        }
-    }
+    // Term "a": doc0 freq=3 positions[0,2,4]; doc1 freq=1 position[1]
+    // deltas (NextPosition returns raw delta): doc0=[0,2,2], doc1=[1]
+    auto tp_a = r.Positions(index::Term(0, "a"));
+    ASSERT_NE(tp_a, nullptr);
+    ASSERT_TRUE(tp_a->Next());
+    EXPECT_EQ(tp_a->Doc(), 0);
+    EXPECT_EQ(tp_a->Freq(), 3);
+    EXPECT_EQ(tp_a->NextPosition(), 0);
+    EXPECT_EQ(tp_a->NextPosition(), 2);
+    EXPECT_EQ(tp_a->NextPosition(), 2);
+    ASSERT_TRUE(tp_a->Next());
+    EXPECT_EQ(tp_a->Doc(), 1);
+    EXPECT_EQ(tp_a->Freq(), 1);
+    EXPECT_EQ(tp_a->NextPosition(), 1);
+    EXPECT_FALSE(tp_a->Next());
+
+    // Term "b": doc0 freq=2 positions[1,3]; doc1 freq=2 positions[0,2]
+    // deltas: doc0=[1,2], doc1=[0,2]
+    auto tp_b = r.Positions(index::Term(0, "b"));
+    ASSERT_NE(tp_b, nullptr);
+    ASSERT_TRUE(tp_b->Next());
+    EXPECT_EQ(tp_b->Doc(), 0);
+    EXPECT_EQ(tp_b->Freq(), 2);
+    EXPECT_EQ(tp_b->NextPosition(), 1);
+    EXPECT_EQ(tp_b->NextPosition(), 2);
+    ASSERT_TRUE(tp_b->Next());
+    EXPECT_EQ(tp_b->Doc(), 1);
+    EXPECT_EQ(tp_b->Freq(), 2);
+    EXPECT_EQ(tp_b->NextPosition(), 0);
+    EXPECT_EQ(tp_b->NextPosition(), 2);
+    EXPECT_FALSE(tp_b->Next());
 }
 
-// ===== Forensic 7: 所有查询结果按分数降序 =====
+// ===== Forensic 7: 搜索结果排序 + 精确分数值 =====
 TEST(ReverseTest, SearchResultsSortedByScore) {
     store::RAMDirectory dir;
     auto a = std::make_unique<analysis::SimpleAnalyzer>();
     index::IndexWriter w(dir, std::move(a));
+    // doc0: "fox jumps quick" (3 tokens)
+    // doc1: "fox rabbit" (2 tokens)
+    // doc2: "quick brown fox jumps" (4 tokens)
     w.AddDocument(D("fox jumps quick"));
     w.AddDocument(D("fox rabbit"));
     w.AddDocument(D("quick brown fox jumps"));
@@ -768,26 +845,44 @@ TEST(ReverseTest, SearchResultsSortedByScore) {
     index::SegmentReader r(dir, "_0");
     search::IndexSearcher s(r);
 
-    auto check_sorted = [](search::Hits* hits, const char* label) {
-        ASSERT_NE(hits, nullptr);
-        for (int i = 1; i < hits->Length(); ++i) {
-            EXPECT_GE(hits->Score(i - 1), hits->Score(i))
-                << label << ": scores not sorted at index " << i;
-        }
-    };
+    // Hand-calculated: TermQuery("fox")
+    // idf = log(3/(3+1)) + 1 = 0.712
+    // doc1 ("fox rabbit", 2 tokens): norm=0.706, score=1×0.712²×0.706=0.358
+    // doc0 ("fox jumps quick", 3 tokens): norm=0.576, score=1×0.712²×0.576=0.292
+    // doc2 ("quick brown fox jumps", 4 tokens): norm=0.498, score=1×0.712²×0.498=0.253
+    auto hits = s.Search(search::TermQuery(index::Term(0, "fox")));
+    ASSERT_NE(hits, nullptr);
+    ASSERT_EQ(hits->Length(), 3);
+    EXPECT_EQ(hits->Id(0), 1) << "doc1 (shortest) ranks first";
+    EXPECT_EQ(hits->Id(1), 0) << "doc0 (medium) ranks second";
+    EXPECT_EQ(hits->Id(2), 2) << "doc2 (longest) ranks third";
+    EXPECT_NEAR(hits->Score(0), 0.358f, 0.01f);
 
-    check_sorted(s.Search(search::TermQuery(index::Term(0, "fox"))).get(), "TermQuery");
-    check_sorted(s.Search(search::TermQuery(index::Term(0, "quick"))).get(), "TermQuery2");
+    // Ensure scores are strictly decreasing
+    for (int i = 1; i < hits->Length(); ++i) {
+        EXPECT_GT(hits->Score(i - 1), hits->Score(i));
+    }
 
+    // BooleanQuery +fox jumps: maxCoord=1+1+1=3
+    // doc1 has no "jumps" → overlap=1, coord=1/3 → lower than all fox docs
     search::BooleanQuery bq;
     bq.Add(std::make_unique<search::TermQuery>(index::Term(0, "fox")), search::Occur::MUST);
     bq.Add(std::make_unique<search::TermQuery>(index::Term(0, "jumps")), search::Occur::SHOULD);
-    check_sorted(s.Search(bq).get(), "BooleanQuery");
+    auto bq_hits = s.Search(bq);
+    ASSERT_NE(bq_hits, nullptr);
+    EXPECT_EQ(bq_hits->Length(), 3);
+    EXPECT_EQ(bq_hits->Id(2), 1) << "doc1 (no jumps) ranks last with BooleanQuery";
+    for (int i = 1; i < bq_hits->Length(); ++i) {
+        EXPECT_GE(bq_hits->Score(i - 1), bq_hits->Score(i));
+    }
 
+    // PhraseQuery should return results sorted
     search::PhraseQuery pq;
     pq.Add(index::Term(0, "quick"));
     pq.Add(index::Term(0, "brown"));
-    check_sorted(s.Search(pq).get(), "PhraseQuery");
+    auto pq_hits = s.Search(pq);
+    ASSERT_NE(pq_hits, nullptr);
+    EXPECT_EQ(pq_hits->Length(), 1);
 }
 
 }  // namespace minilucene

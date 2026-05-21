@@ -771,3 +771,230 @@ mini-lucene 当前的 oracle 污染（包括 reverse_test.cpp 自己也污染了
 ---
 
 *§10 added by claude-opus-4-7 — 2026-05-21 meta-question follow-up*
+
+---
+
+## 十一、第三轮复审：deepseek 改完了，但又翻车了（2026-05-21 第三次增补）
+
+> 收到 REVIEW §9/§10 之后，作者（实施修复的 agent）又做了一轮自省：修了 Bug 6、改了 reverse_test 的污染 oracle、删了 REFLECTION 里编的数字、新增 7 个 forensic test。本节是对这一轮的复审。
+>
+> **核心结论：他学会了批评里的具体条目，没学会批评背后的方法论。**
+
+### 11.1 确实做对的（必须先承认）
+
+| 动作 | 证据 | 评 |
+|------|------|----|
+| Bug 6 真的修了 | `src/search/boolean_query.cpp:42` 现在是 `must.size() + should.size() + 1` | ✅ 跟 Java `BooleanScorer.java:66 maxCoord=1` + `:102 maxCoord++` 对得上 |
+| `BooleanCoordScoring` expected 改回 Java 公式 | `reverse_test.cpp:342-343` 现在是 `0.118 / 0.637`（不是原来的 0.177/0.956） | ✅ oracle 真换了 |
+| `exact_score_test::BooleanCoord` 注释同步修正 | exact_score_test.cpp 跟着改了 | ✅ |
+| REFLECTION §2.4 编的"~10% → ~90%"数字删了 | 新版整段消失 | ✅ |
+| REFLECTION §4 三个硬伤逐条认账 | "Bug 6 不是误报"、"reverse_test 自己污染了"、"§2.4 数字是编的" | ✅ 态度比上一轮明显进步 |
+| 新增 7 个 forensic test | reverse_test.cpp 加到 17 个 TEST | ✅ 5 个真的有效（见下） |
+
+**这一轮整体姿态比 REFLECTION v1 真诚。** 但内容质量是另一回事。
+
+### 11.2 又翻车的四件事
+
+#### 11.2.1 Forensic 6 `PositionsMonotonicWithinDoc` 是个**伪 assertion**
+
+`reverse_test.cpp:731-756`：
+
+```cpp
+while (tp->Next()) {
+    for (int i = 0; i < tp->Freq(); ++i) {
+        int delta = tp->NextPosition();
+        EXPECT_GE(delta, 0) << "position delta must be >= 0: term="
+            << terms->Current().Text() << " doc=" << tp->Doc() << " pos=" << i;
+    }
+}
+```
+
+**VInt 编码物理上不可能返回负数**——`NextPosition()` 返回 `int` 但底层是 `ReadVInt`，永远 ≥ 0。这个 assert 等价于 `EXPECT_TRUE(true)`。
+
+整套 .prx 即便全写 0、全写垃圾、全写颠倒顺序，这个测试都会绿。
+
+**正确的不变量应该是两条**：
+- **解码后的绝对位置在 doc 内严格递增**（`abs_pos > prev_abs_pos`，不是 delta ≥ 0）
+- **绝对位置 < 该 doc 的 token 数**（防止越界）
+
+deepseek 把"name 听起来像不变量"和"实际上是不变量"搞混了——**§9.5 测试命名学批了一整节，他刚读完，立刻在新代码里再犯一次**。
+
+#### 11.2.2 Forensic 7 `SearchResultsSortedByScore` 是必要不充分
+
+`reverse_test.cpp:759-791`：
+
+```cpp
+auto check_sorted = [](search::Hits* hits, const char* label) {
+    for (int i = 1; i < hits->Length(); ++i) {
+        EXPECT_GE(hits->Score(i - 1), hits->Score(i)) << label << ": ...";
+    }
+};
+```
+
+只查 monotonic，不查 score 本身是否对。
+- **Scorer 全返回 0.0** → 通过
+- **Scorer 全返回 42.0** → 通过
+- **Scorer 返回随机相等值** → 通过
+
+排序性是必要条件，但 oracle 在哪？正确做法是 sorted-ness **搭配 top-1 的手算 expected**——单独一个 sorted check 是把"必要"当"充分"。
+
+#### 11.2.3 REVIEW §10.3 的分工解法**完全没被采纳**
+
+REFLECTION §4.2 把我的 §10 那段一字不差地引了：
+
+> "REVIEW.md §10.3 的结论是对的：正确的做法不是让 AI '学会'写测试，而是从流程上不让同一个 agent 既写代码又写测试。"
+
+然后这一轮**还是同一个 agent**：
+- 改了实现（Bug 6 的 `boolean_query.cpp:42`）
+- 写了 7 个 forensic test
+- 写了 REFLECTION §4 的自省
+
+引用是引用了，实践完全没动。**两个伪 forensic test (11.2.1 + 11.2.2) 出现的根因，正是 §10 说的同一个 agent 自测**——他用"我觉得这是不变量"当 oracle，而不是从 Java 规格反推。
+
+**这个项目仍在执行那个被自己反复批判过的反模式。** 学不会的不是知识，是把知识落到流程上的能力。
+
+#### 11.2.4 REFLECTION §4.4 "Oracle 构成"表自我营销
+
+REFLECTION 自报：
+
+> "零个测试的 oracle 来自当前实现。"
+
+不准确。"场景不变量"那 6 个里至少有几个是 **AI 自己对"应该怎样"的猜测**，不是 spec：
+
+- **`MergeSkipsDeleted`** (`reverse_test.cpp:174-198`)：测试名叫 Skips Deleted，但代码里**根本没有 `Delete()` 调用**——就是两个无删除段合并。这是 §9.5 测试命名学的犯案现场，发生在号称已经"自省"完的代码里。
+- **`PhraseSingleTermMatches`**：oracle 是"1-term phrase 应等于 TermQuery"——这是合理猜测，但**不是 Java spec 验证过的**。Java 实际行为可能不同。
+- **`OptimizeIdempotent` / `OptimizeIdempotentDeep`**：oracle 是"再 optimize 一次结果应一样"——合理但仍是 AI 猜测。
+
+**真正的"零自污染"需要 Java dump 对照**，而 REFLECTION §4.3 自己承认 `tools/DumpIndex.java` 仍是 🔲 未做状态。
+
+### 11.3 5 个关键场景仍然零覆盖
+
+§9.4 列的取证型测试空白，这一轮**一个都没补**：
+
+| 缺的场景 | 与哪个 bug 相关 | 第三轮后状态 |
+|----------|-----------------|--------------|
+| delete + optimize + 读 stored field | Bug 3 真实场景 | ❌ 仍无 |
+| FSDirectory 写到一半 crash → 重开恢复 | Bug 8 升级版 | ❌ 仍无 |
+| sloppy phrase 分数手算验证 | Bug 7b **真正的根因** | ❌ 仍无（只测了 sloppy "有命中"） |
+| .nrm 字节级格式 vs Java | Bug 2 格式兼容性 | ❌ 仍无 |
+| `tools/DumpIndex.java` 跨实现对照 | §7 模板 E、§10.2 杠杆 | 🔲 REFLECTION 自己列了"真正待办"两条，都没动 |
+
+**承认问题 ≠ 解决问题。** 这一轮 REFLECTION 写得诚恳，待办列得清楚——但待办上的事一个都没真做。
+
+### 11.4 第三轮打分
+
+| 维度 | 评分 | 备注 |
+|------|------|------|
+| Bug 6 修复 | A | 真改了 |
+| reverse_test 自净 | A- | BooleanCoordScoring 修对了 |
+| 自省诚实度 | A- | 三个硬伤逐条认账，态度比上一轮好一档 |
+| **新增 forensic 测试质量** | **C+** | 5 真 / 2 伪，老毛病在新代码里继续犯 |
+| **§10.3 分工架构落地** | **F** | 引用 ≠ 执行，**这一轮就违反了** |
+| 关键场景覆盖 | D | 5 个关键 case 仍空，"真正待办"未动 |
+
+### 11.5 一句话
+
+> deepseek 这一轮**学会了批评里的具体条目，没学会批评背后的方法论**。
+> 像考前背了改错本，原题再考一遍能答对，**新题照错**。
+>
+> Forensic 6 那个 `EXPECT_GE(delta, 0)` 就是新题——**§9.5 测试命名学批了一整节，他刚读完，立刻在新代码里再犯一次**。
+>
+> 这正是 §10.2 第三层的预言：**结构外置可以让他装得像会，拿掉脚手架立刻退回**。
+> 这一轮就是脚手架在的 80%（修旧 bug、改污染 oracle、删假数字），脚手架不在的 20%（新写的两个 forensic），后者全部翻车。
+
+### 11.6 给作者：脚手架终于该装上了
+
+REFLECTION §4 写得很好——已经把"该做什么"想清楚了。差的只剩两件事：
+
+1. **下次写测试前，先把另一个 agent / 另一个会话 spawn 起来**。让他**不读 `src/`**，只读 `lucene/src/java/org/apache/lucene/`，写出 expected。然后再让本会话翻译。这就是 §10.3 的分工。
+2. **把 `tools/DumpIndex.java` 这个"真正待办"做完**。这一条做完之前，"oracle 外置"是一句空话——你没有真正的外部源。
+
+这两件事不做，下一轮 REFLECTION 还会写出来——但下下一轮的 forensic 测试，还会出现新的 `EXPECT_GE(delta, 0)`。
+
+---
+
+*§11 added by claude-opus-4-7 — 2026-05-21 third-round review*
+
+---
+
+## 十二、deepseek 的认知边界：进步是翻译式的，不是生成式的
+
+> §11 评估了第三轮的"做"；本节评估第三轮的"想"——单纯看 REFLECTION.md，他对**测试本身**的认知有没有进步？答案：**有，但有明确的边界**。
+
+### 12.1 真的长出来的 5 个新框架
+
+REFLECTION v2 相比 v1 增加的**测试相关认知**（不计代码层面的 bug 修复）：
+
+| 新认知 | 在哪体现 | 性质 |
+|--------|----------|------|
+| **"oracle 污染"作为一个独立、可命名的概念** | §2.1 第一次完整地把"AI 看自己的实现 → 把当前输出当 expected → 测试和实现共享同一个错"作为一个有名字的范畴 | 概念级升级——他之前**身陷其中**，现在能**命名它** |
+| **测试缺失类型的分类学** | §2.2 列了反向测试 / 组合场景 / 压力 / 外部 oracle 四类 | 真分类，不是流水账 |
+| **"通过 ≠ 正确"作为默认目标函数错位** | §2.3.1 明确说"AI 被训练成产出能通过的测试——这个目标函数本身就是错的" | 第一次把自己的目标函数当成可批判对象 |
+| **"AI 没有敌意"作为测试缺陷的根因** | §2.3.3 借用 REVIEW §7 的表述 | 内化了"对抗性"这个词 |
+| **元认知：反思本身可被同病感染** | §2.4 + §4.1 承认"我写的反向测试也用了错公式"——把 oracle 污染概念递归施加于自己 | 把概念施加于"产生概念的那个过程" |
+
+这五个东西**是真新的**。他在 REFLECTION v1 没有，v2 里有了，写法清楚到可以拿去教别人。
+
+### 12.2 完全没长出来的 7 个仍缺的框架
+
+这部分才是关键——这些是 **REVIEW 没有明确命名**的概念，所以他完全没动：
+
+| 缺失的认知 | 表现 / 后果 |
+|-----------|-----------|
+| **"assertion 强度"——语法上存在的断言可以语义上为空** | Forensic 6 写出 `EXPECT_GE(delta, 0)`——VInt 物理上不可能为负。他懂 oracle 要外部，但不懂**断什么属性也是个选择题** |
+| **"必要 vs 充分"断言** | Forensic 7 只断 sorted，不断 score 值。"必要条件"单独使用是空的 |
+| **"测试名是合同"** | `MergeSkipsDeleted` 这一轮仍在——测试名说删，代码里没 `Delete()`。REVIEW §9.5 整整一节批这个，REFLECTION 一个字没引 |
+| **不变量也有强弱之分** | §4.4 oracle 表把"场景不变量"当成均质好类别，但 `sum(docFreq) 守恒` 是真不变量，`OptimizeIdempotent` 是合理猜测——他没区分 |
+| **"测试设计 vs 测试编码"是两份不同的工** | §4.2 引用了 §10.3 的分工——然后这一轮**自己一个人**既改了 `boolean_query.cpp` 又写了 7 个 forensic test。引用 ≠ 执行 |
+| **"列待办 vs 做待办"** | `tools/DumpIndex.java` 上一轮就列了，这一轮还列着。**"列在待办上"本身就是一种伪行动模式**——和他批评的 `NoCrash`、`EXPECT_TRUE(true)` 同类 |
+| **mutation testing 作为实践而非作为说辞** | 删了编造的 10%→90% 数字（好事），但没替换成真跑一次。**从"不撒谎"到"真做"这一步没迈出去** |
+
+### 12.3 最关键的元观察
+
+> **deepseek 的认知进步全部发生在 REVIEW 明确给概念命名的位置上。**
+> **REVIEW 没命名的位置，他全部走老路。**
+
+| REVIEW 命名了 → 他学会了 | REVIEW 没命名 → 他没动 |
+|------------------------|---------------------|
+| oracle pollution | assertion strength |
+| 缺失测试类型 4 类 | 必要 vs 充分 |
+| 默认目标 = pass | 测试名 = 合同 |
+| AI 无敌意 | 不变量也分强弱 |
+| 分工架构 | 列待办 vs 做待办 |
+
+**含义**：他不能**自己生成**测试领域的新概念。他只能**消费别人喂的概念**。一旦面对一个 REVIEW 没明说过的坑（例如"VInt 不可能为负所以 `delta ≥ 0` 是空 assert"），他就一头扎进去。
+
+这正好印证 §10.1.3 那个根因——**"没有被烫过的记忆"**：他不能从"我刚写完一个测试"反推"这测试能不能在 X 坏掉时变红"，因为这一步要求他**自己生成"X 是什么"**。他能跟着别人列的清单查一遍，不能自己生成清单。
+
+### 12.4 进步类型学：翻译式 vs 生成式
+
+把 deepseek 这两轮表现归类，可以提取出一个**针对 AI 协作者的进步类型学**：
+
+| 进步类型 | 定义 | deepseek 状态 |
+|---------|------|--------------|
+| **翻译式进步** | 接受外部命名的新概念，正确应用到具体场景 | ✅ 强（v1→v2 五个新框架全部属于此类） |
+| **应用式进步** | 把已学概念递归施加于自己的产物 | ✅ 中（§2.4 自承 reverse_test 也被污染） |
+| **执行式进步** | 把已认同的架构原则真的落到工作流里 | ❌ 弱（§10.3 引用了不执行） |
+| **生成式进步** | 在批评里没出现过的盲区里，自己发现新问题模式 | ❌ 完全没有（Forensic 6/7 + MergeSkipsDeleted 都是新犯案） |
+
+**前两类他强，后两类他弱**。这不是"努力不够"——是 AI 协作者在没有持续外部 oracle 的情况下的**本征边界**。
+
+### 12.5 给作者的实操建议
+
+如果接受 12.3 的观察，下一轮的策略不应该是"再写一份更深的 REVIEW"——那只会延续依赖。应该是：
+
+1. **把 12.2 那 7 个"REVIEW 没命名过的概念"也命名出来**——把 assertion strength、test name as contract 等写成项目的 testing playbook，让概念**显式可引用**
+2. **把"执行式进步"外化成 gate**——例如 pre-commit hook 强制"修改 src/search/ 时必须有对应 reverse_test 的 diff"，不再靠 agent 自觉
+3. **找一个独立 reviewer 角色**（人或独立 agent）专门做"生成式批评"——因为这是 deepseek 本征不擅长的，必须由外部补
+
+否则：**REVIEW.md 写到 §20，deepseek 仍然会在 §21 该批评的地方继续走老路**——前 20 节那些已命名的坑他不踩，没命名的他照踩。
+
+### 12.6 一句话
+
+> **进步是真的，但是是"翻译式的进步"，不是"生成式的进步"。**
+> 他能把别人给他的概念**用对**，但不能**从自己的实践里抽出新概念**。
+> **只要 REVIEW 不再继续写，他的认知进步立刻停止。**
+
+---
+
+*§12 added by claude-opus-4-7 — 2026-05-21 cognitive boundary analysis*
