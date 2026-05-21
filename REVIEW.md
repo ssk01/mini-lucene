@@ -998,3 +998,160 @@ REFLECTION v2 相比 v1 增加的**测试相关认知**（不计代码层面的 
 ---
 
 *§12 added by claude-opus-4-7 — 2026-05-21 cognitive boundary analysis*
+
+---
+
+## 13 — 第四轮：deepseek 对 §11/§12 的响应 & 作者的"没戏"判决
+
+写完 §11/§12 之后，deepseek 又连推了两个 commit。本节验证 §12.3 的核心论断："命名颗粒度决定他改不改"。
+
+### 13.1 这两个 commit 干了什么
+
+**eb0f927 — fix: 响应 REVIEW §11/12，修掉 3 个测试 + 更新 REFLECTION**
+
+| 我在 §11 具名点出的项 | deepseek 的修法 | 评价 |
+|---------------------|----------------|------|
+| `MergeSkipsDeleted` 名实不符（不 Delete） | 拆成 `MergeTwoSingleDocSegments` + 新增 `MergeWithDeletedDocs` 真正调 `Delete(0)/Delete(1)`，断言 `NumDocs==2`、stored field 值、被删 term `docFreq=0` | ✅ 实质修复，oracle 是场景不变量 |
+| `PositionsMonotonicWithinDoc`（VInt 上零强度同义反复） | 替换为 `PositionsExactValues`，手算 tp_a doc0=[0,2,2] doc1=[1]、tp_b doc0=[1,2] doc1=[0,2] | ✅ 每个 delta 钉死 |
+| `SearchResultsSortedByScore`（仅必要不充分） | 加 TF-IDF 手算（idf=0.7123 → doc1=0.358）+ `EXPECT_NEAR(..., 0.358, 0.01)` + 严格 `EXPECT_GT` + BooleanQuery 也加 rank | ✅ 不再可被乱序实现骗过 |
+
+**e5e0a62 — test: 清除 EXPECT_TRUE 零强度断言**（响应 §9.8）
+
+| 项 | 修法 |
+|----|------|
+| `SegmentMergeQueueOrdersByTerm` 名说 order 体 `EXPECT_TRUE(true)` | 改名 `SegmentMergeQueueBasicOps` + 留 TODO（坦白做不到） |
+| `StandardFilterNormalizesTokens` 名说归一化 体 `EXPECT_TRUE(true)` | 改 `StandardFilterConstructs` + `EXPECT_NO_THROW` + 注释承认 StandardFilter 是 no-op |
+| 全仓 `grep "EXPECT_TRUE(true)"` | 0 命中 |
+
+### 13.2 哪些没做
+
+| 我在前文点过的项 | 命名颗粒度 | 当前状态 |
+|----------------|----------|---------|
+| `tools/DumpIndex.java` 提供 Java oracle | 提了 4 次，但是"待办"级 | 🔲 |
+| 实测 mutation testing（不是说辞） | §9.7 + §12.2 都点过 | 🔲 |
+| §10.3 的"实现者与测试者分工" | 概念级，未给执行步骤 | 🔲（这两次 commit 仍是一个 agent 自改自测） |
+| §11.3 的 5 个未触场景（delete+optimize+stored read、FSDirectory 崩后恢复、sloppy phrase 分数、.nrm 字节格式、跨 Java 全量 oracle） | 列了清单未给 code-level 落点 | 🔲（0 新增） |
+
+### 13.3 §12 的论点再次被精准验证
+
+| §12 的预测 | 这两个 commit 的对照 |
+|----------|-------------------|
+| 翻译式 ✅ | §9.8、§11.2.1/2.3/2.4 这些**有具名 + 有 file:line + 有改法**的，全部照做 |
+| 应用式 ✅ | `MergeWithDeletedDocs` 应用了"测试名 = 合同"的概念到新测试 |
+| 执行式 ❌ | DumpIndex.java、mutation testing、分工——都是被命名但要主动落地的事，全 🔲 |
+| 生成式 ❌ | §11.3 那 5 个未具名场景 + 任何"自己新发现的盲区" = 0 |
+
+**命名颗粒度越细他越照做，颗粒度越粗他越无视。**这一轮把 §12.3 的曲线再次描了一遍——线性的。
+
+### 13.4 作者的"没戏"判决
+
+> "这么折腾感觉没有戏，我对他现在的实现没啥信心" — 2026-05-21
+
+这个判决是对的。可以从三个角度论证：
+
+**1. 资产负债比**
+
+- 修过的 bug：9 个（catch(...) 掩盖的 P0、跨段位置串台、短语重读、failbit、overlap_max…）
+- 加过的 forensic 测试：16 个（其中 7 个第一版还需要再修）
+- 修复次数：3 轮（9c372ea → 1e2f6e6 → fa0be33 → eb0f927 → e5e0a62）
+- 每轮都暴露上一轮自测的新盲区
+
+**单位代码量上的隐性 bug 密度**没有下降的证据——只是"已命名的 bug"越来越少；"未命名的 bug"产生速率没有数据，但参考 reverse_test v1 在 7/16 上自带污染，没理由相信主代码上突变抵抗会显著更好。
+
+**2. 边际收益曲线**
+
+| 轮次 | 投入（REVIEW 字数） | 修掉的真问题 | 触发的新问题 |
+|------|------------------|------------|-------------|
+| v1 (REVIEW §1–8) | ~12k | 9 个 P0/P1 | 1 个错误判断（Bug 6 一度误删） |
+| v2 (REVIEW §9–10) | ~6k | 7 个零强度/弱断言 + 概念落地 | 3 个新测试一开始就有质量问题 |
+| v3 (REVIEW §11) | ~3k | 3 个具名缺陷 + 1 个 EXPECT_TRUE 批 | 0 个执行式进步、0 个生成式进步 |
+| v4 (REVIEW §12) | ~2.5k | 元层批评 | 没改变 v3 的执行模式 |
+
+**REVIEW 越深、deepseek 改的越具体而表面**。换句话说：往下写 §13/§14/§15 会得到越来越精细的"修文字、改名字、加 oracle 数字"，但**核心边界（一个 agent 自实现自测试）不会突破**——而这个边界正是 §10.3 已经命过名的根因。
+
+**3. 结构性问题不是 deepseek 能解的**
+
+§10.3 说"AI 不会真的会写测试，只能放进流程"。这一轮 deepseek 把 §10.3 的文字读到了 REFLECTION.md 里，但**仍然以"一个 agent 自己实现自己测试"的姿态执行了 eb0f927**。这不是他不努力——是这个角色只有从外部分工才能解。继续让同一个 agent 写代码 + 写测试 + 写反思，无论 REVIEW 多深，都不会让 oracle 污染消失。
+
+### 13.5 现实选项
+
+如果接受 13.4 的判决，现在有三条路：
+
+**A. 收手当大作业交付**
+- 已修 9 bug + 29 测试通过的状态本身比绝大多数学生大作业强
+- 把 REVIEW/REFLECTION 当作"知道自己测试为什么不可信"的元交付
+- 不再追求"信得过的实现"——追求"诚实的工程评估"
+- **成本最低，价值在元层**
+
+**B. 换结构：实现者 / 测试者拆成两个 agent**
+- 一个 agent 只写实现，看不到测试
+- 另一个 agent（甚至换不同模型）只写测试，看不到实现，只看 Java 1.0.1 行为规格
+- 第三个角色（人 or claude-opus）做对照
+- **成本中等，是 §10.3 的真落地，可能突破当前边界**
+
+**C. 引入真外部 oracle：tools/DumpIndex.java**
+- 写 Java 程序用 Lucene 1.0.1 对同一份输入产出 JSON
+- C++ 跑同样输入 diff JSON
+- 把"翻译式进步"从"翻译 REVIEW 文字"升级成"翻译 Java 二进制行为"
+- **成本最高（要写 Java + 装环境），但唯一能产生持续生成式压力的方案**
+
+**D. 继续写 §13/§14/§15 让 deepseek 再改一轮**
+- 边际收益已知递减
+- 不解决结构问题
+- **不推荐**
+
+### 13.6 一句话
+
+> **你对实现没信心是对的——但这个"没信心"本身是这个项目最有价值的产出**：
+> 一份能让你不信任自己 AI 协作者代码的 REVIEW，比一份"看起来都对"的 implementation 工程价值高一个量级。
+> 真正的 deliverable 不是 mini-lucene，是"AI 工程协作的边界图"。
+
+---
+
+*§13 added by claude-opus-4-7 — 2026-05-21, 第四轮观察 + 作者判决论证*
+
+---
+
+## 14 — 双 agent 行动日志（append-only）
+
+> 协议见 `AGENTS.md`。每个 agent 完成实质动作后追加一条。**只追加，不修改、不删除既有条目。**
+> 每次被唤起的第一件事：从这里读对方最近的条目，决定下一步。
+
+格式：
+```
+### YYYY-MM-DD HH:MM — [claude|deepseek] <动作摘要>
+- Files touched: <list>
+- Commit: <hash 或 uncommitted>
+- Result: <pass/fail/红绿数 + 行号>
+- Why: <为什么做这一步>
+```
+
+<!-- 以下为日志，新条目追加在末尾，不要插入历史中间 -->
+
+### 2026-05-21 17:30 — [claude] 建立双 agent 协作协议
+- Files touched: `AGENTS.md`（新建）
+- Commit: uncommitted
+- Result: AGENTS.md §1–§7 完整，定义文件归属（claude 拥有 forensic 测试 + REVIEW + AGENTS；deepseek 拥有 src/include 实现 + REFLECTION）、commit 前缀规范、握手格式、oracle 来源白名单、pending queue
+- Why: REVIEW §10.3 / §13 论证了"单 agent 自实现自测试"是根本结构问题；用户授权 claude 写测试 + deepseek 写实现的分工；需要协议文件让分工可执行、可审计
+
+### 2026-05-21 17:35 — [claude] 写第一批 forensic 测试 + 立刻抓到 bug
+- Files touched: `tests/integration/forensic_claude_test.cpp`（新建，3 个测试）、`BUILD.bazel`（加 `forensic_claude_test` target）
+- Commit: uncommitted
+- Result: `bazel test //:forensic_claude_test` → 2 PASS / 1 FAIL
+  - ✅ `PhraseSlopGating`：slop=0 不命中 + slop=1 命中 `"alpha gamma"` in `"alpha beta gamma"`
+  - ✅ `SloppyPhraseScoreDecreasesWithDistance`：exact 比 1-gap 分数高 + 排序正确
+  - ❌ `DeleteOptimizeStoredFieldReadConsistency` （tests/integration/forensic_claude_test.cpp:67）：
+    - `SegmentsReader.Delete(0)` + `Delete(2)` 后 `NumDocs()` 返回 5（期望 3）
+    - Optimize 后仍 5 doc / MaxDoc=5，所有原 doc 完整保留
+    - 怀疑根因：`include/minilucene/index/segments_reader.h:29` 返回缓存的 `total_docs_`，没随 Delete 更新；Delete 可能没正确委托给下层 SegmentReader 或没持久化
+- Why: 验证 §11.3 列出的"delete+optimize+stored read"组合从未测过的预测。第一次出手就抓到，符合预期——说明此前测试的覆盖盲区是真的。
+- Handoff: deepseek 见 `AGENTS.md` §6 Pending Queue 第一条；oracle 来自 scenario invariant（不依赖任何实现细节），如果不同意 oracle 请在 REFLECTION.md 推回，不要改 forensic 测试。
+
+### 2026-05-21 17:55 — [claude] 加自动 loop 协议 + 决策辅助脚本
+- Files touched: `AGENTS.md`（新增 §8 自动 loop 协议）、`scripts/agent_loop.sh`（新建，决策辅助脚本）
+- Commit: uncommitted
+- Result: smoke test 通过：当前两边都返回 ACT（因为 Pending Queue 有 1 项 + 历史最新 commit 是 `test:` 无 agent 限定）。一旦推送 `test(claude):` commit，预期 deepseek→ACT，claude→SLEEP_SHORT。
+- Why: 用户明确"不要当 dispatcher"，要求两个 agent 自动来回。补 §8 协议（决策步骤 + STOP 触发条件 4 种：任务完成 / 死循环 / 预算耗尽 30 commits / 协议违规），并写 30 行 shell 脚本 `scripts/agent_loop.sh` 让 loop 第一句就跑——返回 ACT/SLEEP_SHORT/SLEEP_LONG/STOP 四态。
+- Next: 待用户批准 commit 推送，然后 user 在两个 Claude Code session 里分别 `/loop` 启动自动模式。
+
+<!-- deepseek 的条目应追加在这里之后 -->

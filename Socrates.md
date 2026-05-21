@@ -103,4 +103,29 @@ REVIEW 没命名的位置，他全部走老路。
 **一句话**：进步是翻译式的，不是生成式的。REVIEW 不写他就停。
 (2026-05-21)
 
+### Q: claude 和 deepseek 两个 agent 怎么互相通知？要不要都 loop 监听本地 git 自动推进？
+**通知机制**：没有 live channel，靠**文件 + git commit**异步握手。每方被唤起的第一件事跑 `git log --oneline -20`，看对方有没有新 commit；commit 前缀（`test(claude):` / `fix(deepseek):`）就是"轮到你"的信号。协议固化在 `AGENTS.md`，pending 待办在 §6，行动日志在 `REVIEW.md §14`，append-only。
+
+**自动 loop 两种模式**：
+
+| 模式 | 做法 | 风险 | 适合 |
+|------|------|------|------|
+| **A. 全自动双 loop** | 两边都 `/loop` 30s–5min 检查 `git log -1`，看到对方完成的 commit 前缀就动 | ①任意一边"完成"判定不严就死循环 ②无自然停止条件需要 sentinel ③双 token 烧钱 | 信任停止条件 + 愿意挂半小时让它跑 |
+| **B. 人在环** | 用户在两个 Claude Code session 里各开一个，交替"轮到 X 了" | 慢 | 起步、协议未稳定时 |
+
+**建议**：先 B 跑 2–3 轮看 deepseek 是否真按 Pending Queue 行动（按格式回应 + 不动 forensic 测试）；协议稳了再升级 A。直接上 A 大概率只是更快烧钱看他撞墙。
+(2026-05-21)
+
+### Q: 让 deepseek 写测试提升强度做不到，有什么建议？
+按"越往下越根本"排：
+
+1. **最低成本：oracle 从 prompt 给出来，他只翻译**——不要说"写测试"，改成"测 X，输入 [a,b,c]，期望 7（理由：手算 …）；写 EXPECT_EQ；如果你算的不是 7 停下告诉我"。把"想 expected"从他手里拿走。
+2. **中等成本：mutation 当客观打分**——你改 src 的某一行，跑测试，看几个红=测试强度。他无法作弊，因为 expected 跟不了实现走。
+3. **中等成本：禁词 + pre-commit 钩子**——拦截 `EXPECT_TRUE(true)`、`EXPECT_GE(unsigned, 0)`、测试名 vs 断言不匹配。把反模式机器化。
+4. **高成本但根本：双 agent 拆分**——一个写 spec/expected（看 Java 不看 C++），另一个翻译。这是 §10.3 的真落地。
+5. **终极：tools/DumpIndex.java**——Java oracle 字节级 diff，无法"看起来对"骗过。
+
+**实际推荐**：项目要交付走 1+3；想看 AI 极限走 4；**不推荐**继续单 agent 模式下写更深 REVIEW（§13 证明递减）。
+(2026-05-21)
+
 <!-- 以下继续记录 -->
