@@ -38,6 +38,20 @@ REVIEW.md 本身有 1 个误报（Bug 6 overlap_max — Java 也是 `must+should
 - 直到 .prx 读到 EOF，catch(...) 吃掉异常
 
 修复：在 Next() 开头跳过所有剩余未消费的 `remaining_positions_`，确保每次 Next() 后 .prx 都指向新 doc 的第一个位置。
+
+### Q: 双 agent 分工的实际效果如何？
+**实战验证了 oracle 污染的破局路径。** 三个回合 ping-pong：
+
+1. claude 写 forensic test（oracle 来自 scenario invariant）→ deepseek 修 SegmentsReader/IndexWriter → claude 验证通过
+2. claude 误诊 field number bug → deepseek 在 REFLECTION.md 反驳（不改测试）→ claude 承认 + 修 oracle → 新失败暴露真 .del bug → deepseek 修 → claude 验证
+3. deepseek 修 BooleanScorer MUST 强制 + Search 空 Hits → 全绿
+
+关键发现：
+- **deepseek 不修改 forensic test** 是协议的核心安全锁 —— 他无法通过"改 expected"作弊
+- **REFLECTION.md 反驳机制**给了 deepseek push back 的通道，不用沉默照办
+- oracle 来自外部不变量（"Optimize 不改变查询语义"是定义级不变量），不依赖任何实现细节
+- REVIEW.md 不是无误 oracle：post-optimize 全绿说明 REVIEW.md §2 Bug 1 可能已过时
+(2026-05-21)
 (2026-05-21)
 
 ### Q: 怎么保证修复是正确的？
