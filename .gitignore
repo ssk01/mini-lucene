@@ -2,3 +2,8 @@ bazel-*
 index/
 demo index/
 *.class
+
+# Local recording files (三圣) — not for remote
+Aristotle.md
+Plato.md
+Socrates.md
