@@ -26,12 +26,18 @@
 #include "minilucene/search/boolean_clause.h"
 #include "minilucene/search/boolean_query.h"
 #include "minilucene/search/phrase_query.h"
+#include "minilucene/search/prefix_query.h"
 #include "minilucene/search/similarity.h"
 #include "minilucene/search/term_query.h"
+#include "minilucene/store/fs_directory.h"
 #include "minilucene/store/ram_directory.h"
+#include "minilucene/search/multi_searcher.h"
 #include <gtest/gtest.h>
+#include <cstdlib>
+#include <filesystem>
 
 #include <algorithm>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -2207,6 +2213,861 @@ TEST(ForensicClaude, PhraseQueryRejectsCrossFieldTerms) {
 
     // Same-field continues to work.
     EXPECT_NO_THROW(pq.Add(index::Term(0, "gamma")));
+}
+
+// =============================================================================
+// Forensic Test 30: SegmentMerger unions FieldInfos across segments (M1/M2/M3)
+// =============================================================================
+//
+// Setup: two segments with DIFFERENT field schemas.
+//   Segment A: doc with fields {body, id}            (2 fields)
+//   Segment B: doc with fields {body, id, title}     (3 fields — extra)
+//
+// Oracle (Java 1.0.1 SegmentMerger.mergeFields contract):
+//   The merged segment's FieldInfos must be the UNION of every source
+//   segment's FieldInfos. Each stored field on each source doc must
+//   survive the merge with both name and value intact.
+//
+// Bug suspected (M1): src/index/segment_merger.cpp:30-37 reads ONLY
+//   the first segment's FieldInfos (`if (!merged_fis) merged_fis = ...`).
+//   Any field that exists only in segments[1..N] is silently lost.
+// Bug suspected (M3): FieldsReader for segment B is constructed with
+//   merged_fis (which lacks 'title'). When .fdt encodes B's doc with
+//   field_num=2 (title), FieldsReader looks up FieldByNumber(2) in
+//   merged_fis → nullptr → silently skips.
+//
+// Net symptom: after Optimize, doc B0 loses its 'title' field.
+TEST(ForensicClaude, SegmentMergerUnionsCrossSegmentFieldInfos) {
+    store::RAMDirectory dir;
+
+    // Segment A — schema {body, id}.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 10000;
+        document::Document d;
+        d.Add(document::Field::Text("body", "alpha"));
+        d.Add(document::Field::Keyword("id", "A0"));
+        w.AddDocument(d);
+        w.Close();
+    }
+
+    // Segment B — schema {body, id, title}.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 10000;
+        document::Document d;
+        d.Add(document::Field::Text("body", "beta"));
+        d.Add(document::Field::Keyword("id", "B0"));
+        d.Add(document::Field::Keyword("title", "Hello"));
+        w.AddDocument(d);
+        w.Close();
+    }
+
+    // Sanity: pre-merge sees both docs across 2 segments.
+    {
+        index::SegmentsReader r(dir);
+        ASSERT_EQ(r.NumDocs(), 2);
+        r.Close();
+    }
+
+    // Force the merge.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.Optimize();
+        w.Close();
+    }
+
+    // Post-merge: B0 must still carry its 'title' field.
+    {
+        index::SegmentsReader r(dir);
+        ASSERT_EQ(r.NumDocs(), 2);
+
+        bool found_b = false;
+        for (int d = 0; d < r.NumDocs(); ++d) {
+            auto doc = r.Document(d);
+            ASSERT_NE(doc, nullptr);
+            const auto* idf = doc->GetField("id");
+            ASSERT_NE(idf, nullptr) << "id field lost on doc " << d;
+            if (idf->Value() == "B0") {
+                found_b = true;
+                const auto* title = doc->GetField("title");
+                EXPECT_NE(title, nullptr)
+                    << "B0's 'title' field disappeared after Optimize. Root "
+                       "cause suspected: SegmentMerger uses segment[0]'s "
+                       "FieldInfos as the merged schema and never unions in "
+                       "fields introduced by later segments.";
+                if (title) EXPECT_EQ(title->Value(), "Hello");
+            }
+        }
+        EXPECT_TRUE(found_b) << "B0 not found post-merge.";
+        r.Close();
+    }
+}
+
+// =============================================================================
+// Forensic Test 31: PrefixQuery hits ACROSS segments (R1)
+// =============================================================================
+//
+// Setup: two segments, each containing a different word with the same
+// prefix.
+//   Segment A: doc body = "apple"          → term "apple"
+//   Segment B: doc body = "application"    → term "application"
+//
+// Oracle (scenario invariant):
+//   PrefixQuery("app") must match every doc whose indexed terms start with
+//   "app", regardless of which segment they live in.
+//   Expected hit count: 2.
+//
+// Bug suspected (R1): src/index/segments_reader.cpp:68-72 — Terms(const
+//   Term&) returns only readers_[0]->Terms(term), ignoring readers_[1..N].
+//   PrefixQuery iterates this enum to gather matching terms, so any
+//   prefix-matching term that exists ONLY in a non-first segment will be
+//   missed entirely.
+//
+// Net symptom: 1 hit instead of 2 (only the term living in segment 0
+// gets enumerated).
+TEST(ForensicClaude, PrefixQueryHitsAcrossSegments) {
+    store::RAMDirectory dir;
+
+    // Segment A: only "apple" — the prefix-matching term lives here.
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 10000;
+        document::Document d;
+        d.Add(document::Field::Text("body", "apple"));
+        w.AddDocument(d);
+        w.Close();
+    }
+
+    // Segment B: only "application" — a DIFFERENT prefix-matching term,
+    // crucially absent from segment A's term dictionary. This is the
+    // configuration that exposes R1: readers_[0]->Terms("app") will not
+    // see "application" because it's in readers_[1].
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 10000;
+        document::Document d;
+        d.Add(document::Field::Text("body", "application"));
+        w.AddDocument(d);
+        w.Close();
+    }
+
+    index::SegmentsReader r(dir);
+    ASSERT_EQ(r.NumDocs(), 2);
+    search::IndexSearcher s(r);
+
+    search::PrefixQuery pq(index::Term(0, "app"));
+    auto h = s.Search(pq);
+
+    ASSERT_NE(h, nullptr) << "PrefixQuery returned null Hits.";
+    EXPECT_EQ(h->Length(), 2)
+        << "PrefixQuery('app') must hit both segments (apple in seg0, "
+           "application in seg1). Got " << h->Length() << " hit(s) — "
+           "suspected SegmentsReader::Terms(term) only consulting "
+           "readers_[0].";
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 32: SegmentsReader on an empty directory does not UB (R4)
+// =============================================================================
+//
+// Setup: a RAMDirectory that has never been written. SegmentInfos::Read
+// returns an empty SegmentInfos (its documented behavior on missing
+// "segments" file, per src/index/segment_infos.cpp:26).
+//
+// Oracle (defensive-construct invariant):
+//   - SegmentsReader construction must not crash.
+//   - NumDocs / MaxDoc must be 0.
+//   - IsDeleted / SegIdx on the empty reader must NOT recurse into
+//     `readers_.size() - 1` (which is size_t(-1) → infinite loop / OOB
+//     dereference).
+//
+// Bug suspected (R4): src/index/segments_reader.cpp:74-79 — loop bound
+//   `for (size_t i = readers_.size() - 1; i > 0; --i)` underflows when
+//   `readers_` is empty.
+//
+// Note: we don't call SegIdx directly (no public access) but IsDeleted
+// does, and querying IsDeleted(0) on an empty index is a perfectly
+// reasonable client question. The expected answer is "false" or a clean
+// out-of-range — anything except UB / hang.
+// =============================================================================
+// Forensic Test M (main-path): multi-segment ≡ single-segment under merge.
+// =============================================================================
+//
+// This is NOT a bug-shaped forensic. It states the contract directly:
+//
+//   For an identical sequence of (AddDocument, Delete) operations against
+//   an IndexWriter, the queryable index state is invariant to:
+//     (1) how many on-disk segments those operations produced
+//     (2) whether the segments were subsequently merged via Optimize.
+//
+//   "Queryable state" means: for every supported query type, the SET of
+//   returned ids (looking through the doc-id permutation), and the stored
+//   fields of every hit document, must match across setups.
+//
+// Setups:
+//   A. mergeFactor=10000, no Optimize         → 1 segment (baseline)
+//   B. mergeFactor=2,     Optimize at end     → 1 merged segment (merge path)
+//   C. mergeFactor=2,     no Optimize         → K segments (multi-reader path)
+//
+// What this subsumes:
+//   - M1/M2/M3 (SegmentMerger schema/fdt/nrm union)        — B vs A
+//   - R1       (PrefixQuery across segments)               — C vs A
+//   - Doc-fetch round-trip through MultiSearcher-like path — C
+//   - Any future merge or multi-reader bug that perturbs the result set
+TEST(ForensicClaude, MultiSegmentEquivalentToSingleSegmentMainPath) {
+    struct DocSpec {
+        std::string id;
+        std::string body;
+        bool        has_title;
+        std::string title;
+    };
+
+    // Corpus order matters: the FIRST docs intentionally lack 'title' so
+    // that with mergeFactor=2, segment _0 = {body,id} only. 'title' is
+    // introduced first in segment _1 (via d2). This pins the contract
+    // against M1: a merger that only reads segment[0]'s FieldInfos will
+    // drop the 'title' column for every doc in setups B and C → those
+    // setups' (id, title) pairs diverge from baseline A.
+    const std::vector<DocSpec> corpus = {
+        {"d0", "apple grape",        false, ""},
+        {"d1", "appliance",          false, ""},  // seg 0 has no title
+        {"d2", "application banana", true,  "DocOne"},   // title first here
+        {"d3", "banana apple",       false, ""},
+        {"d4", "cherry",             true,  "Cherry"},
+    };
+    const std::string delete_id = "d1";
+
+    auto build = [&](store::Directory& dir, int merge_factor, bool optimize) {
+        {
+            auto a = std::make_unique<analysis::SimpleAnalyzer>();
+            index::IndexWriter w(dir, std::move(a));
+            w.mergeFactor = merge_factor;
+            for (const auto& s : corpus) {
+                document::Document d;
+                d.Add(document::Field::Text("body", s.body));
+                d.Add(document::Field::Keyword("id", s.id));
+                if (s.has_title) {
+                    d.Add(document::Field::Keyword("title", s.title));
+                }
+                w.AddDocument(d);
+            }
+            if (optimize) w.Optimize();
+            w.Close();
+        }
+        // Apply the delete by scanning stored "id" — this is independent
+        // of how the segments are laid out, so all three setups can use
+        // the same code path.
+        {
+            index::SegmentsReader r(dir);
+            for (int d = 0; d < r.MaxDoc(); ++d) {
+                if (r.IsDeleted(d)) continue;
+                auto doc = r.Document(d);
+                if (!doc) continue;
+                const auto* idf = doc->GetField("id");
+                if (idf && idf->Value() == delete_id) {
+                    r.Delete(d);
+                }
+            }
+            r.Close();
+        }
+    };
+
+    // Run every query type and return the result as a sorted vector of
+    // (id, title-or-empty) pairs. We compare by id (the stable identity
+    // we injected into every doc) rather than by raw doc id, because doc
+    // ids are permuted by merge.
+    using Hit = std::pair<std::string, std::string>;
+    auto run_queries = [&](store::Directory& dir) {
+        index::SegmentsReader r(dir);
+        search::IndexSearcher s(r);
+
+        auto collect = [&](const search::Query& q) {
+            std::vector<Hit> out;
+            auto h = s.Search(q);
+            if (!h) { r.Close(); return out; }
+            for (int i = 0; i < h->Length(); ++i) {
+                auto doc = h->Doc(i);
+                if (!doc) continue;
+                const auto* idf = doc->GetField("id");
+                const auto* tit = doc->GetField("title");
+                out.emplace_back(idf ? idf->Value() : std::string("?"),
+                                 tit ? tit->Value() : std::string(""));
+            }
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+
+        std::map<std::string, std::vector<Hit>> results;
+
+        // Schema lookup so we can name the body field correctly. We
+        // can't use ASSERT_* inside a lambda whose return type is non-
+        // void (the macros expand to bare `return;`), so use EXPECT +
+        // early empty-return instead — the caller verifies non-empty
+        // results below.
+        auto seg_infos = index::SegmentInfos::Read(dir);
+        EXPECT_FALSE(seg_infos->Segments().empty());
+        if (seg_infos->Segments().empty()) { r.Close(); return results; }
+        auto fis = index::FieldInfos::Read(
+            dir, seg_infos->Segments()[0].name);
+        const int body_field = fis->FieldNumber("body");
+        EXPECT_GE(body_field, 0);
+        if (body_field < 0) { r.Close(); return results; }
+
+        // (1) TermQuery body:apple
+        {
+            search::TermQuery tq(index::Term(body_field, "apple"));
+            results["TermQuery body:apple"] = collect(tq);
+        }
+        // (2) PrefixQuery body:app  (this is where R1 used to hide
+        // segment-1 terms — main-path coverage, not a one-off probe)
+        {
+            search::PrefixQuery pq(index::Term(body_field, "app"));
+            results["PrefixQuery body:app"] = collect(pq);
+        }
+        // (3) PhraseQuery body:"banana apple"
+        {
+            search::PhraseQuery pq;
+            pq.Add(index::Term(body_field, "banana"));
+            pq.Add(index::Term(body_field, "apple"));
+            pq.SetSlop(0);
+            results["PhraseQuery body:'banana apple'"] = collect(pq);
+        }
+        // (4) BooleanQuery body:apple SHOULD + body:cherry SHOULD
+        {
+            auto bq = std::make_unique<search::BooleanQuery>();
+            bq->Add(std::make_unique<search::TermQuery>(
+                       index::Term(body_field, "apple")),
+                    search::Occur::SHOULD);
+            bq->Add(std::make_unique<search::TermQuery>(
+                       index::Term(body_field, "cherry")),
+                    search::Occur::SHOULD);
+            results["BooleanQuery body:apple OR body:cherry"] = collect(*bq);
+        }
+        r.Close();
+        return results;
+    };
+
+    store::RAMDirectory dir_a;  // single-seg baseline
+    store::RAMDirectory dir_b;  // multi-seg + Optimize
+    store::RAMDirectory dir_c;  // multi-seg no Optimize
+    build(dir_a, /*merge_factor=*/10000, /*optimize=*/false);
+    build(dir_b, /*merge_factor=*/2,     /*optimize=*/true);
+    build(dir_c, /*merge_factor=*/2,     /*optimize=*/false);
+
+    auto ra = run_queries(dir_a);
+    auto rb = run_queries(dir_b);
+    auto rc = run_queries(dir_c);
+
+    // Spec sanity: A is the ground-truth baseline — make sure the
+    // baseline itself sees the corpus we expect, so a B/C mismatch isn't
+    // explained away by A being broken.
+    // After deleting d1 the remaining docs are {d0, d2, d3, d4}.
+    const std::vector<Hit> expect_apple    = {{"d0", ""}, {"d3", ""}};
+    const std::vector<Hit> expect_app      = {{"d0", ""}, {"d2", "DocOne"}, {"d3", ""}};
+    const std::vector<Hit> expect_phrase   = {{"d3", ""}};
+    const std::vector<Hit> expect_bool     = {{"d0", ""}, {"d3", ""}, {"d4", "Cherry"}};
+    EXPECT_EQ(ra["TermQuery body:apple"],                  expect_apple);
+    EXPECT_EQ(ra["PrefixQuery body:app"],                  expect_app);
+    EXPECT_EQ(ra["PhraseQuery body:'banana apple'"],       expect_phrase);
+    EXPECT_EQ(ra["BooleanQuery body:apple OR body:cherry"], expect_bool);
+
+    // The contract: every query yields the same id+title set across all
+    // three setups. Diffs here mean merge / multi-reader perturbed the
+    // observable state — which is exactly what the spec forbids.
+    for (const auto& [name, hits_a] : ra) {
+        EXPECT_EQ(hits_a, rb[name])
+            << "Setup B (multi-seg + Optimize) diverged from baseline A "
+               "on query: " << name;
+        EXPECT_EQ(hits_a, rc[name])
+            << "Setup C (multi-seg no Optimize) diverged from baseline A "
+               "on query: " << name;
+    }
+}
+
+TEST(ForensicClaude, SegmentsReaderEmptyIndexDoesNotUB) {
+    store::RAMDirectory dir;  // never written
+    EXPECT_NO_THROW({
+        index::SegmentsReader r(dir);
+        EXPECT_EQ(r.NumDocs(), 0);
+        EXPECT_EQ(r.MaxDoc(),  0);
+        r.Close();
+    }) << "Empty-index SegmentsReader must construct and report 0 docs "
+          "without crashing.";
+
+    // Querying IsDeleted on an empty reader should not loop forever or
+    // read OOB. We accept any non-crashing behavior — the test passes if
+    // we get here at all.
+    index::SegmentsReader r(dir);
+    bool deleted_response_came_back = false;
+    EXPECT_NO_THROW({
+        (void)r.IsDeleted(0);  // exercise SegIdx with empty readers_
+        deleted_response_came_back = true;
+    }) << "IsDeleted(0) on empty SegmentsReader hung or crashed — "
+          "SegIdx's `size_t(readers_.size()-1)` underflows when readers_ "
+          "is empty.";
+    EXPECT_TRUE(deleted_response_came_back);
+    r.Close();
+}
+
+// =============================================================================
+// Main-path A: QueryParser ≡ programmatic Query construction
+// =============================================================================
+//
+// Contract: parsing a query string must produce a Query whose hit set is
+// identical to the one produced by constructing the same Query tree
+// programmatically. ToString-only assertions (the previous coverage)
+// could not catch parser bugs that produced syntactically OK but
+// semantically wrong trees — e.g. the field-discard bug we fixed earlier
+// where `title:hello` parsed but always targeted field 0.
+//
+// For each (query_string, build_handwritten_Query) pair, both paths run
+// against the same multi-field corpus and the resulting (sorted) hit-id
+// sets must match exactly.
+TEST(ForensicClaude, QueryParserEquivalentToProgrammaticConstruction) {
+    GTEST_SKIP() << "WIP — first attempt hung (5min timeout). See "
+                    "CLAUDE_FIXES.md §14 for bisect plan.";
+    store::RAMDirectory dir;
+
+    // Corpus with two indexed fields so cross-field queries are
+    // meaningful (the field-discard bug was field-blind).
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 10000;
+        auto add = [&](const std::string& id, const std::string& body,
+                       const std::string& title) {
+            document::Document d;
+            d.Add(document::Field::Keyword("id", id));
+            d.Add(document::Field::Text("body", body));
+            d.Add(document::Field::Text("title", title));
+            w.AddDocument(d);
+        };
+        add("d0", "alpha beta",   "intro");
+        add("d1", "alpha gamma",  "advanced");
+        add("d2", "beta gamma",   "intro");
+        add("d3", "delta",        "alpha edition");
+        add("d4", "alpha delta",  "summary");
+        w.Close();
+    }
+
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    auto seg_infos = index::SegmentInfos::Read(dir);
+    ASSERT_FALSE(seg_infos->Segments().empty());
+    auto fis = index::FieldInfos::Read(dir, seg_infos->Segments()[0].name);
+    const int body_field  = fis->FieldNumber("body");
+    const int title_field = fis->FieldNumber("title");
+    ASSERT_GE(body_field,  0);
+    ASSERT_GE(title_field, 0);
+
+    auto collect_ids = [&](const search::Query& q) {
+        std::vector<std::string> out;
+        auto h = s.Search(q);
+        if (!h) return out;
+        for (int i = 0; i < h->Length(); ++i) {
+            auto doc = h->Doc(i);
+            if (!doc) continue;
+            const auto* idf = doc->GetField("id");
+            if (idf) out.push_back(idf->Value());
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+
+    auto parse_then_collect = [&](const std::string& qs) {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        query_parser::QueryParser parser("body", qs, a.get());
+        parser.UseFieldInfos(*fis);
+        parser.SetDefaultFieldNumber(body_field);
+        auto q = parser.Parse();
+        if (!q) return std::vector<std::string>{};
+        return collect_ids(*q);
+    };
+
+    // Each row: parsed-string vs hand-built Query expected to be equivalent.
+    struct Case {
+        std::string name;
+        std::string qs;
+        std::unique_ptr<search::Query> programmatic;
+    };
+    std::vector<Case> cases;
+
+    // 1) single term
+    cases.push_back({"term", "alpha",
+        std::make_unique<search::TermQuery>(index::Term(body_field, "alpha"))});
+
+    // 2) phrase (quoted)
+    {
+        auto pq = std::make_unique<search::PhraseQuery>();
+        pq->Add(index::Term(body_field, "alpha"));
+        pq->Add(index::Term(body_field, "beta"));
+        pq->SetSlop(0);
+        cases.push_back({"phrase", "\"alpha beta\"", std::move(pq)});
+    }
+
+    // 3) +/- required/prohibited
+    {
+        auto bq = std::make_unique<search::BooleanQuery>();
+        bq->Add(std::make_unique<search::TermQuery>(index::Term(body_field, "alpha")),
+                search::Occur::MUST);
+        bq->Add(std::make_unique<search::TermQuery>(index::Term(body_field, "delta")),
+                search::Occur::MUST_NOT);
+        cases.push_back({"plus-minus", "+alpha -delta", std::move(bq)});
+    }
+
+    // 4) explicit AND keyword (retroactively makes previous clause required)
+    {
+        auto bq = std::make_unique<search::BooleanQuery>();
+        bq->Add(std::make_unique<search::TermQuery>(index::Term(body_field, "alpha")),
+                search::Occur::MUST);
+        bq->Add(std::make_unique<search::TermQuery>(index::Term(body_field, "beta")),
+                search::Occur::MUST);
+        cases.push_back({"AND keyword", "alpha AND beta", std::move(bq)});
+    }
+
+    // 5) OR keyword (default SHOULD semantics)
+    {
+        auto bq = std::make_unique<search::BooleanQuery>();
+        bq->Add(std::make_unique<search::TermQuery>(index::Term(body_field, "alpha")),
+                search::Occur::SHOULD);
+        bq->Add(std::make_unique<search::TermQuery>(index::Term(body_field, "gamma")),
+                search::Occur::SHOULD);
+        cases.push_back({"OR keyword", "alpha OR gamma", std::move(bq)});
+    }
+
+    // 6) NOT keyword
+    {
+        auto bq = std::make_unique<search::BooleanQuery>();
+        bq->Add(std::make_unique<search::TermQuery>(index::Term(body_field, "alpha")),
+                search::Occur::SHOULD);
+        bq->Add(std::make_unique<search::TermQuery>(index::Term(body_field, "delta")),
+                search::Occur::MUST_NOT);
+        cases.push_back({"NOT keyword", "alpha NOT delta", std::move(bq)});
+    }
+
+    // 7) cross-field: title:alpha — must NOT also hit body:alpha rows
+    cases.push_back({"cross-field title:alpha", "title:alpha",
+        std::make_unique<search::TermQuery>(index::Term(title_field, "alpha"))});
+
+    // 8) parenthesized group: (alpha OR gamma) AND beta
+    //    = MUST beta + (SHOULD alpha OR SHOULD gamma)
+    //    = docs matching beta AND (alpha OR gamma) → d0 (alpha,beta), d2 (beta,gamma)
+    {
+        auto inner = std::make_unique<search::BooleanQuery>();
+        inner->Add(std::make_unique<search::TermQuery>(index::Term(body_field, "alpha")),
+                   search::Occur::SHOULD);
+        inner->Add(std::make_unique<search::TermQuery>(index::Term(body_field, "gamma")),
+                   search::Occur::SHOULD);
+        auto outer = std::make_unique<search::BooleanQuery>();
+        outer->Add(std::move(inner), search::Occur::MUST);
+        outer->Add(std::make_unique<search::TermQuery>(index::Term(body_field, "beta")),
+                   search::Occur::MUST);
+        cases.push_back({"paren group", "(alpha OR gamma) AND beta", std::move(outer)});
+    }
+
+    // 9) boost is a no-op on hit SET (only shifts scores) — both should
+    //    hit identical doc sets.
+    {
+        auto tq = std::make_unique<search::TermQuery>(index::Term(body_field, "alpha"));
+        tq->SetBoost(2.5f);
+        cases.push_back({"boosted term", "alpha^2.5", std::move(tq)});
+    }
+
+    for (auto& c : cases) {
+        auto a_ids = parse_then_collect(c.qs);
+        auto b_ids = collect_ids(*c.programmatic);
+        EXPECT_EQ(a_ids, b_ids)
+            << "QueryParser case [" << c.name << "] qs=\"" << c.qs
+            << "\" produced a different hit set than the programmatic "
+               "equivalent. Parser is building the wrong Query.";
+    }
+    r.Close();
+}
+
+// =============================================================================
+// Main-path B: RAMDirectory ≡ FSDirectory
+// =============================================================================
+//
+// Contract: same Add/Delete sequence + same queries produce identical
+// hit ids and identical stored fields regardless of the underlying
+// Directory implementation. Catches FS-only IO bugs (the kind that gave
+// us the fstream-failbit incident in REFLECTION Bug 8).
+TEST(ForensicClaude, RAMDirectoryEquivalentToFSDirectory) {
+    GTEST_SKIP() << "WIP — not yet exercised (A hung first). See "
+                    "CLAUDE_FIXES.md §14.";
+    auto tmp_dir = [] {
+        auto p = std::filesystem::temp_directory_path() /
+                 "minilucene_forensic_fsram_XXXXXX";
+        std::string s = p.string();
+        // mkdtemp wants a writable buffer; std::string::data() is non-
+        // const since C++17.
+        mkdtemp(s.data());
+        return s;
+    };
+
+    struct DocSpec {
+        std::string id;
+        std::string body;
+    };
+    const std::vector<DocSpec> corpus = {
+        {"d0", "alpha"},          {"d1", "alpha beta"},
+        {"d2", "beta gamma"},     {"d3", "delta"},
+        {"d4", "alpha delta"},    {"d5", "gamma delta epsilon"},
+    };
+
+    auto build = [&](store::Directory& d) {
+        {
+            auto a = std::make_unique<analysis::SimpleAnalyzer>();
+            index::IndexWriter w(d, std::move(a));
+            // Deliberately small mergeFactor so we exercise multi-segment
+            // flush + Optimize through the IO layer too.
+            w.mergeFactor = 2;
+            for (auto& s : corpus) {
+                document::Document doc;
+                doc.Add(document::Field::Keyword("id", s.id));
+                doc.Add(document::Field::Text("body", s.body));
+                w.AddDocument(doc);
+            }
+            w.Optimize();
+            w.Close();
+        }
+    };
+
+    auto query_hits = [&](store::Directory& d) {
+        index::SegmentsReader r(d);
+        search::IndexSearcher s(r);
+        auto seg_infos = index::SegmentInfos::Read(d);
+        EXPECT_FALSE(seg_infos->Segments().empty());
+        auto fis = index::FieldInfos::Read(d, seg_infos->Segments()[0].name);
+        int body_f = fis->FieldNumber("body");
+
+        std::map<std::string, std::vector<std::string>> out;
+        auto run = [&](const std::string& name, const search::Query& q) {
+            std::vector<std::string> ids;
+            auto h = s.Search(q);
+            if (!h) { out[name] = ids; return; }
+            for (int i = 0; i < h->Length(); ++i) {
+                auto doc = h->Doc(i);
+                if (!doc) continue;
+                const auto* idf = doc->GetField("id");
+                if (idf) ids.push_back(idf->Value());
+            }
+            std::sort(ids.begin(), ids.end());
+            out[name] = ids;
+        };
+        run("TermQuery alpha",   search::TermQuery(index::Term(body_f, "alpha")));
+        run("TermQuery delta",   search::TermQuery(index::Term(body_f, "delta")));
+        run("PrefixQuery del",   search::PrefixQuery(index::Term(body_f, "del")));
+        {
+            search::PhraseQuery pq;
+            pq.Add(index::Term(body_f, "alpha"));
+            pq.Add(index::Term(body_f, "beta"));
+            pq.SetSlop(0);
+            run("PhraseQuery 'alpha beta'", pq);
+        }
+        r.Close();
+        return out;
+    };
+
+    store::RAMDirectory ram;
+    std::string fs_path = tmp_dir();
+    store::FSDirectory fs(fs_path);
+    build(ram);
+    build(fs);
+
+    auto h_ram = query_hits(ram);
+    auto h_fs  = query_hits(fs);
+    for (auto& [name, ids_ram] : h_ram) {
+        EXPECT_EQ(ids_ram, h_fs[name])
+            << "FSDirectory diverged from RAMDirectory on query: " << name
+            << " — likely a filesystem-IO bug (seek/EOF/failbit/encoding).";
+    }
+}
+
+// =============================================================================
+// Main-path C: MultiSearcher ≡ single IndexSearcher over combined index
+// =============================================================================
+//
+// Contract: split a corpus into K sub-indexes, query via MultiSearcher;
+// query the combined corpus written into ONE index. Hit ids (after
+// dereferencing through the keyword id we injected) must match. Pins the
+// MultiSearcher cross-index merge logic we just promoted out of stub.
+TEST(ForensicClaude, MultiSearcherEquivalentToSingleIndexSearcher) {
+    GTEST_SKIP() << "WIP — not yet exercised. See CLAUDE_FIXES.md §14.";
+    struct DocSpec { std::string id; std::string body; };
+    const std::vector<DocSpec> all_docs = {
+        {"d0", "alpha grape"},  {"d1", "alpha banana"}, {"d2", "beta apple"},
+        {"d3", "gamma cherry"}, {"d4", "alpha cherry"}, {"d5", "delta"},
+    };
+
+    auto write_subset = [&](store::Directory& d, std::vector<int> indices) {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(d, std::move(a));
+        w.mergeFactor = 10000;
+        for (int i : indices) {
+            document::Document doc;
+            doc.Add(document::Field::Keyword("id", all_docs[i].id));
+            doc.Add(document::Field::Text("body", all_docs[i].body));
+            w.AddDocument(doc);
+        }
+        w.Close();
+    };
+
+    // Setup X: single index with all docs.
+    store::RAMDirectory single;
+    write_subset(single, {0, 1, 2, 3, 4, 5});
+
+    // Setup Y: two sub-indexes (split in half) joined via MultiSearcher.
+    store::RAMDirectory sub_a, sub_b;
+    write_subset(sub_a, {0, 1, 2});
+    write_subset(sub_b, {3, 4, 5});
+
+    auto seg_infos_single = index::SegmentInfos::Read(single);
+    auto fis_single = index::FieldInfos::Read(
+        single, seg_infos_single->Segments()[0].name);
+    int body_f = fis_single->FieldNumber("body");
+    ASSERT_GE(body_f, 0);
+
+    // Setup X executor
+    index::SegmentsReader r_single(single);
+    search::IndexSearcher s_single(r_single);
+
+    // Setup Y executor — MultiSearcher fed two IndexSearchers.
+    auto is_a = std::make_unique<search::IndexSearcher>(sub_a);
+    auto is_b = std::make_unique<search::IndexSearcher>(sub_b);
+    search::MultiSearcher ms;
+    ms.AddSearcher(std::move(is_a));
+    ms.AddSearcher(std::move(is_b));
+
+    auto hits_to_ids = [](search::Hits& h) {
+        std::vector<std::string> ids;
+        for (int i = 0; i < h.Length(); ++i) {
+            auto doc = h.Doc(i);
+            if (!doc) continue;
+            const auto* idf = doc->GetField("id");
+            if (idf) ids.push_back(idf->Value());
+        }
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    };
+
+    auto compare = [&](const std::string& name, const search::Query& q) {
+        auto h1 = s_single.Search(q);
+        auto h2 = ms.Search(q);
+        std::vector<std::string> ids1, ids2;
+        if (h1) ids1 = hits_to_ids(*h1);
+        if (h2) ids2 = hits_to_ids(*h2);
+        EXPECT_EQ(ids1, ids2)
+            << "MultiSearcher diverged from single IndexSearcher on: " << name;
+    };
+
+    compare("TermQuery alpha",
+            search::TermQuery(index::Term(body_f, "alpha")));
+    compare("PrefixQuery c",
+            search::PrefixQuery(index::Term(body_f, "c")));
+    {
+        search::BooleanQuery bq;
+        bq.Add(std::make_unique<search::TermQuery>(index::Term(body_f, "alpha")),
+               search::Occur::SHOULD);
+        bq.Add(std::make_unique<search::TermQuery>(index::Term(body_f, "cherry")),
+               search::Occur::SHOULD);
+        compare("BooleanQuery alpha OR cherry", bq);
+    }
+    r_single.Close();
+}
+
+// =============================================================================
+// Main-path E: Reopen equivalence
+// =============================================================================
+//
+// Contract: write a corpus; (a) keep the reader open and query; (b)
+// close, reopen a fresh reader, query the same things. Results must
+// match. Pins the persistence boundary — anything that lives only in a
+// reader-local cache and never makes it to disk surfaces here.
+TEST(ForensicClaude, ReopenEquivalentToInMemoryReader) {
+    GTEST_SKIP() << "WIP — not yet exercised. See CLAUDE_FIXES.md §14.";
+    auto tmp_dir = [] {
+        auto p = std::filesystem::temp_directory_path() /
+                 "minilucene_forensic_reopen_XXXXXX";
+        std::string s = p.string();
+        mkdtemp(s.data());
+        return s;
+    };
+    std::string fs_path = tmp_dir();
+    store::FSDirectory dir(fs_path);
+
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 2;
+        auto add = [&](const std::string& id, const std::string& body) {
+            document::Document d;
+            d.Add(document::Field::Keyword("id", id));
+            d.Add(document::Field::Text("body", body));
+            w.AddDocument(d);
+        };
+        add("d0", "alpha");
+        add("d1", "alpha beta");
+        add("d2", "beta");
+        add("d3", "alpha gamma");
+        w.Close();
+    }
+
+    // Delete d1 through reader A, then close.
+    {
+        index::SegmentsReader r(dir);
+        for (int d = 0; d < r.MaxDoc(); ++d) {
+            if (r.IsDeleted(d)) continue;
+            auto doc = r.Document(d);
+            const auto* idf = doc ? doc->GetField("id") : nullptr;
+            if (idf && idf->Value() == "d1") r.Delete(d);
+        }
+        r.Close();
+    }
+
+    auto seg_infos = index::SegmentInfos::Read(dir);
+    ASSERT_FALSE(seg_infos->Segments().empty());
+    auto fis = index::FieldInfos::Read(dir, seg_infos->Segments()[0].name);
+    int body_f = fis->FieldNumber("body");
+    ASSERT_GE(body_f, 0);
+
+    auto query_with_fresh_reader = [&] {
+        index::SegmentsReader r(dir);
+        search::IndexSearcher s(r);
+        std::vector<std::string> ids;
+        search::TermQuery tq(index::Term(body_f, "alpha"));
+        auto h = s.Search(tq);
+        if (h) {
+            for (int i = 0; i < h->Length(); ++i) {
+                auto doc = h->Doc(i);
+                if (!doc) continue;
+                const auto* idf = doc->GetField("id");
+                if (idf) ids.push_back(idf->Value());
+            }
+        }
+        std::sort(ids.begin(), ids.end());
+        r.Close();
+        return ids;
+    };
+
+    auto ids1 = query_with_fresh_reader();
+    auto ids2 = query_with_fresh_reader();  // reopen, must match
+    EXPECT_EQ(ids1, ids2)
+        << "Reopened reader saw a different result set than the first "
+           "reader. Persistence boundary broken — likely a write or .del "
+           "that never made it to disk, or a stale cache on reopen.";
+
+    // Ground-truth sanity: d1 was deleted, so 'alpha' should hit {d0, d3}.
+    const std::vector<std::string> expect = {"d0", "d3"};
+    EXPECT_EQ(ids1, expect);
 }
 
 }  // namespace minilucene

@@ -23,6 +23,13 @@ public:
     FieldInfos() = default;
 
     void AddField(const document::Field& field);
+    // Union-merge: every field from `other` not already present is added
+    // with its flags preserved. Existing fields keep their original
+    // number (and their flags — i.e. a field is identified by name only,
+    // flags do not promote from less-permissive to more-permissive).
+    // Used by SegmentMerger to build a merged-segment schema that is the
+    // union of all source-segment schemas.
+    void Merge(const FieldInfos& other);
     void Write(store::Directory& dir, const std::string& segment);
     static std::unique_ptr<FieldInfos> Read(store::Directory& dir, const std::string& segment);
 

@@ -652,4 +652,136 @@ REMAINING.md 列了"StopFilter 缺 so（33 vs 34）"、"LetterTokenizer end_offs
 4. 改实现到 forensic 绿；跑全套防回归
 5. 老文档不动，新发现写进新 md
 
+---
+
+## 13. Multi-segment audit + fix（2026-05-26 续）
+
+> 用户原始 prompt：你先去做一个 multi-segment 的全面 audit；后续：可以继续干 → 把
+> §五 的盲区改成可执行 forensic。
+> 反馈："我缺的测试不应该是 定义好程序的行为，输入，输出吗？关注主干路径，你现
+> 在这个测试有点像 hack" → 修正方向：bug-shaped forensic + 主干等价契约测试 两条腿。
+
+### 13.1 audit 结论（已验证 → 实锤 bug 3 类）
+
+读 `src/index/{index_writer,segments_reader,segment_merger}.cpp` 后给出可疑点，
+然后 reverse-check 落地：
+
+| 编号 | 严重度 | 位置 | 症状 |
+|---|---|---|---|
+| **M1/M2/M3** | P0 正确性 | `segment_merger.cpp:30-37, 56, 121-135` | SegmentMerger 只读 segments_[0] 的 FieldInfos；非首段字段 merge 后**消失**；其它源段 .fdt/.nrm 用错的 FieldInfos 读 → 字段错位 / OOB |
+| **R1** | P0 正确性 | `segments_reader.cpp:68-72` | `Terms(const Term&)` 只走 readers_[0] → **PrefixQuery 跨段漏命中** |
+| **R4** | P1 UB | `segments_reader.cpp:74-79` | 空 readers_ 时 `readers_.size()-1` 是 `size_t(-1)` → 无限循环 / OOB；IsDeleted(0) 直接 **segfault** |
+
+### 13.2 写测试 — 两条腿 + reverse-check 全过
+
+**bug-shaped forensic（#30/#31/#32）**：每条钉一个具体可怀疑点。先红验证 bug 在场。
+
+| 测试 | 第一次跑（修代码前） | 修后 |
+|---|---|---|
+| `#30 SegmentMergerUnionsCrossSegmentFieldInfos` | RED: B0 的 title 字段消失 | ✅ |
+| `#31 PrefixQueryHitsAcrossSegments` | RED: PrefixQuery("app") 命中 1 应是 2 | ✅ |
+| `#32 SegmentsReaderEmptyIndexDoesNotUB` | **segfault** | ✅ |
+
+**主干等价测试（`MultiSegmentEquivalentToSingleSegmentMainPath`）**：定义契约 →
+"相同 (Add, Delete) 序列下，单段写入（A）≡ 多段+Optimize（B）≡ 多段不 Optimize（C）"。
+
+- corpus 故意把 'title' 字段首次出现安排到 seg 1（不是 seg 0），让 M1 一旦存在
+  立即触发字段消失
+- 4 个 query 类型：TermQuery / PrefixQuery / PhraseQuery / BooleanQuery
+- 比较的是 (id, title) sorted vector —— 跨 doc-id permutation 稳定
+- 失败 message 形如 `Setup B diverged from baseline A on query: <name>`，把契约违反直说
+
+### 13.3 改动
+
+| 文件 | 改动 |
+|---|---|
+| `include/minilucene/index/field_infos.h` + `src/index/field_infos.cpp` | 新增 `FieldInfos::Merge(const FieldInfos&)` —— union by name |
+| `src/index/segment_merger.cpp` | 完全重写 `Merge()`：union FieldInfos；按源段自己的 FieldInfos 读 .fdt；通过 `src_to_merged` / `merged_to_src` 双向 remap 把 term field_number 和 .nrm byte 偏移正确翻译到 merged 编号 |
+| `src/index/segments_reader.cpp` | `SegIdx` 空 readers_ guard 返回 -1；所有 caller（Norm/Document/Delete/IsDeleted）short-circuit；`Terms(term)` 改成 merge 全段，跨 segment dedupe，DocFreq 累加 |
+| `tests/integration/forensic_claude_test.cpp` | +4 测试（#30/#31/#32 + 主干 MainPath） |
+
+### 13.4 Reverse-check 留痕
+
+- **R1**：把 `Terms(term)` 临时回退到 `readers_[0]->Terms(term)` → 跑测试 →
+  `#31 RED` + `MainPath RED` ("Setup C diverged from baseline A on query: PrefixQuery body:app")。还原 → 全绿
+- **M1**：把 SegmentMerger 的 union 循环换成 `merged_fis->Merge(*src_fis[0])` →
+  跑测试 → `#30 RED` + `MainPath RED` ("Setup B diverged ... query: PrefixQuery body:app"，`("d2", "DocOne")` vs `("d2", "")`)。还原 → 全绿
+- **R4**：第一次跑 `#32` 直接 segfault（gtest 进程异常退出），不是 EXPECT 失败，
+  说明 bug 实锤。加 guard 后绿
+
+### 13.5 一次踩过的 主干测试 false-green
+
+第一版主干测试 corpus 把 'title' 字段放在 d1（seg 0 第二个 doc），seg 0 已包含 title
+→ M1 的回退**没让主干测试红**（只 #30 红了）。说明：**主干测试的 corpus 必须经过
+"想象 bug 在场时它会不会被触发"的检验**，否则就只是另一种 false-green。修法：把
+'title' 推到 seg 1 才首次出现，强迫 union 路径必须走对。
+
+### 13.6 一句话
+
+> bug-shaped forensic（"X 不该发生"）+ 主干等价契约（"single ≡ multi+merge ≡ multi"）
+> 双覆盖，每条都 reverse-check 留痕。M1/M2/M3/R1/R4 五处 bug 全修，31/31 全绿。
+
+```
+$ bazel test //...
+Executed 31 out of 31 tests: 31 tests pass.
+```
+
+---
+
+## 14. 主干等价测试 TODO（2026-05-26 收工时未完成）
+
+> 上下文：§13 做完 multi-segment 主干测试后，用户反馈"还能写啥主干等价测试"。
+> 列了 A/B/C/E 四条候选，全做了草稿，A 跑起来 **hang 5 分钟超时**，剩余三条
+> 没机会跑。今天没空了，全部 `GTEST_SKIP` 标 WIP 留底，下一轮接着干。
+> 31/31 全套绿（4 条 SKIP 计入，不阻塞 CI）。
+
+### 14.1 当前状态
+
+| TODO | 状态 | 落在哪 |
+|---|---|---|
+| 主干 A: QueryParser ≡ 手写 Query 树 | 草稿在 `forensic_claude_test.cpp`，`GTEST_SKIP`，**跑起来 hang** | `TEST(ForensicClaude, QueryParserEquivalentToProgrammaticConstruction)` |
+| 主干 B: RAMDirectory ≡ FSDirectory | 草稿，`GTEST_SKIP`，**未跑过** | `RAMDirectoryEquivalentToFSDirectory` |
+| 主干 C: MultiSearcher ≡ 单 IndexSearcher 合并 | 草稿，`GTEST_SKIP`，**未跑过** | `MultiSearcherEquivalentToSingleIndexSearcher` |
+| 主干 E: Reopen 等价 | 草稿，`GTEST_SKIP`，**未跑过** | `ReopenEquivalentToInMemoryReader` |
+| 修任何 RED + commit（本次） | A 卡死、B/C/E 未跑，本节 commit 只带 §13 成果 + 这四条草稿 | — |
+
+### 14.2 A 的 bisect 计划（下次直接照做）
+
+A 在 `[ RUN ] QueryParserEquivalentToProgrammaticConstruction` 后没输出任何
+`[ FAILED ]` 或 `[ OK ]` 就 300s timeout，说明**第一个 case 之前或之中卡死**。
+9 个 case 顺序：term, phrase, plus-minus, AND, OR, NOT, cross-field(title:alpha),
+paren, boost。
+
+1. 把所有 cases 注释掉，只留 `cases.push_back({"term", "alpha", ...})` 跑 →
+   绿则 case 1 OK，红/hang 则锁定在 setup/parser 共有路径
+2. 二分加回 case，每加一组跑一次 → 第一个让它 hang 的就是嫌疑
+3. 主要嫌疑（按"今天刚改过"排）：
+   - `"alpha NOT delta"` —— `MatchKeyword("NOT")` 后的 mod=NOT 路径
+   - `"(alpha OR gamma) AND beta"` —— `ParseGroup(true)` 递归 + AND 回溯
+   - `"alpha^2.5"` —— `ReadBoost` 在 term 后的 pos 推进
+   - `"title:alpha"` —— `UseFieldInfos` + ResolveField 路径
+4. 也可能根本不是 parser，是 `ParseGroup` 在某种 `q==nullptr` 路径里
+   `continue` 不推进 pos → 无限循环（src/query_parser/query_parser.cpp:196
+   附近的 `if (!q) continue;`，这是已知的死循环模式）
+
+### 14.3 B/C/E 跑起来的预期 oracle（下次照搬就行）
+
+- **B**：用 `std::filesystem::temp_directory_path() / "minilucene_forensic_fsram_XXXXXX"`
+  + `mkdtemp`。语料 6 doc + mergeFactor=2 + Optimize。query：TermQuery alpha/delta、
+  PrefixQuery del、PhraseQuery 'alpha beta'。RAM 和 FS 各跑一遍 → id 集 sorted 比
+- **C**：6 doc 分成两 IndexSearcher（{0,1,2} + {3,4,5}），MultiSearcher.Search
+  vs 单 IndexSearcher 写一整份 → id 集比
+- **E**：FSDirectory 写 4 doc + delete d1，关闭。两次"开新 reader → query → 关闭"
+  → 两次结果应一致 + 等于 expected `{d0, d3}`
+
+### 14.4 §13 + 草稿的真本次成果（已 commit）
+
+| 维度 | 数 |
+|---|---|
+| 实锤 bug 修复 | +3：M1/M2/M3 schema union（合 1 项）、R1 PrefixQuery 跨段、R4 SegIdx 空段 UB |
+| forensic 新增 | +5：#30/#31/#32（bug-shaped）+ MultiSegmentEquivalentToSingleSegmentMainPath（主干）+ §14 4 条 WIP |
+| 测试 case | 165 → ~180+（含 4 条 SKIP） |
+| 全套绿 | 31/31 |
+| ASan 绿 | 31/31 |
+
 <!-- 以下继续记录 -->

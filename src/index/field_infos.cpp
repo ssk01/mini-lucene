@@ -17,6 +17,16 @@ void FieldInfos::AddField(const document::Field& field) {
     name_to_num_[field.Name()] = number;
 }
 
+void FieldInfos::Merge(const FieldInfos& other) {
+    for (const auto& src : other.fields_) {
+        if (name_to_num_.find(src.Name()) != name_to_num_.end()) continue;
+        int number = Size();
+        fields_.emplace_back(src.Name(), number, src.IsStored(),
+                             src.IsIndexed(), src.IsTokenized());
+        name_to_num_[src.Name()] = number;
+    }
+}
+
 void FieldInfos::Write(store::Directory& dir, const std::string& segment) {
     auto out = dir.CreateOutput(segment + ".fnm");
     out->WriteVInt(Size());

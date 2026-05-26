@@ -66,12 +66,60 @@ std::unique_ptr<TermEnum> SegmentsReader::Terms() {
 }
 
 std::unique_ptr<TermEnum> SegmentsReader::Terms(const Term& term) {
-    // Use first segment's Terms(term) — not perfect for multi-segment but avoids full scan
+    // Was: forwarded only to readers_[0], dropping any prefix-matching
+    // terms living in segments 1..N. PrefixQuery iterates this enum to
+    // collect candidate terms, so the bug surfaced as "PrefixQuery misses
+    // hits whose terms are not in the first segment."
+    //
+    // Fix: union every segment's Terms(term) starting point, then dedupe
+    // and sort so the enumeration is monotone (PrefixQuery walks while
+    // term.Text().starts_with(prefix), which requires sorted order).
+    struct SetEnum : TermEnum {
+        std::vector<Term> terms_;
+        std::vector<int>  doc_freqs_;
+        int pos_ = -1;
+        bool Next() override {
+            ++pos_;
+            return pos_ < static_cast<int>(terms_.size());
+        }
+        const Term& Current() const override { return terms_[pos_]; }
+        int DocFreq() const override {
+            if (pos_ < 0 || pos_ >= static_cast<int>(doc_freqs_.size())) return 0;
+            return doc_freqs_[pos_];
+        }
+        void Close() override {}
+    };
+
     if (readers_.empty()) return nullptr;
-    return readers_[0]->Terms(term);
+
+    std::map<Term, int> merged;  // map gives sorted iteration + dedup
+    for (auto& r : readers_) {
+        auto te = r->Terms(term);
+        if (!te) continue;
+        while (te->Next()) {
+            const Term& cur = te->Current();
+            // Stop scanning this segment once we pass the field — saves
+            // walking unrelated suffix terms in the same segment.
+            if (cur.FieldNumber() != term.FieldNumber()) break;
+            merged[cur] += r->DocFreq(cur);
+        }
+        te->Close();
+    }
+
+    auto result = std::make_unique<SetEnum>();
+    for (auto& [t, df] : merged) {
+        result->terms_.push_back(t);
+        result->doc_freqs_.push_back(df);
+    }
+    return result;
 }
 
 int SegmentsReader::SegIdx(int doc_id) const {
+    // Underflow guard: readers_.size() - 1 wraps to SIZE_MAX when empty,
+    // which spun SegIdx forever and OOB-indexed doc_starts_ in the
+    // process. Defined behavior on an empty reader: return -1 so callers
+    // can early-out instead of dereferencing a nonexistent segment.
+    if (readers_.empty()) return -1;
     for (size_t i = readers_.size() - 1; i > 0; --i) {
         if (doc_id >= doc_starts_[i]) return static_cast<int>(i);
     }
@@ -168,21 +216,25 @@ std::unique_ptr<TermPositions> SegmentsReader::Positions(const Term& term) {
 
 float SegmentsReader::Norm(int doc, int field_number) {
     int si = SegIdx(doc);
+    if (si < 0) return 0.0f;
     return readers_[si]->Norm(LocalDoc(doc, si), field_number);
 }
 
 std::unique_ptr<document::Document> SegmentsReader::Document(int doc_id) {
     int si = SegIdx(doc_id);
+    if (si < 0) return nullptr;
     return readers_[si]->Document(LocalDoc(doc_id, si));
 }
 
 void SegmentsReader::Delete(int doc_id) {
     int si = SegIdx(doc_id);
+    if (si < 0) return;
     readers_[si]->Delete(LocalDoc(doc_id, si));
 }
 
 bool SegmentsReader::IsDeleted(int doc_id) const {
     int si = SegIdx(doc_id);
+    if (si < 0) return false;
     return readers_[si]->IsDeleted(LocalDoc(doc_id, si));
 }
 
