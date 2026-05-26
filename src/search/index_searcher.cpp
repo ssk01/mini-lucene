@@ -1,4 +1,5 @@
 #include "minilucene/search/index_searcher.h"
+#include "minilucene/document/document.h"
 #include "minilucene/index/index_reader.h"
 #include "minilucene/index/segment_infos.h"
 #include "minilucene/index/segment_reader.h"
@@ -125,6 +126,11 @@ void IndexSearcher::Close() {
 
 int IndexSearcher::MaxDoc() const {
     return reader_->MaxDoc();
+}
+
+std::unique_ptr<document::Document> IndexSearcher::Document(int doc_id) const {
+    if (!reader_) return nullptr;
+    return reader_->Document(doc_id);
 }
 
 }  // namespace search

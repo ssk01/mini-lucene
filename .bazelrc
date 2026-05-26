@@ -1,3 +1,27 @@
 build --cxxopt=-std=c++17
 build --cxxopt=-Wall --cxxopt=-Wextra --cxxopt=-Wpedantic
 test --test_output=errors
+
+# AddressSanitizer + UBSan. Usage:
+#   bazel test --config=asan //...
+build:asan --copt=-fsanitize=address
+build:asan --copt=-fsanitize=undefined
+build:asan --copt=-fno-omit-frame-pointer
+build:asan --copt=-g
+build:asan --linkopt=-fsanitize=address
+build:asan --linkopt=-fsanitize=undefined
+build:asan --strip=never
+# detect_leaks=1 is Linux-only; LSan is not supported on macOS as of this
+# writing. ASan still catches use-after-free, heap/stack overflow, etc.
+test:asan --test_env=ASAN_OPTIONS=halt_on_error=1
+test:asan --test_env=UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+
+# Source-line coverage (clang/llvm-cov). Usage:
+#   bazel coverage --config=coverage //...
+#   then run scripts/coverage_report.sh to render an HTML report.
+build:coverage --copt=-fprofile-instr-generate
+build:coverage --copt=-fcoverage-mapping
+build:coverage --copt=-g
+build:coverage --linkopt=-fprofile-instr-generate
+build:coverage --linkopt=-fcoverage-mapping
+build:coverage --strip=never

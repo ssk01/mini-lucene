@@ -375,7 +375,6 @@ cc_test(
     srcs = ["tests/integration/missing_features_test.cpp"],
     deps = [":search", ":index", ":analysis", ":store", ":document",
             "@googletest//:gtest_main"],
-    tags = ["manual"],
 )
 
 cc_test(
@@ -469,7 +468,18 @@ cc_binary(
 cc_binary(
     name = "search_files",
     srcs = ["examples/search_files.cpp"],
-    deps = [":index", ":search", ":store", ":document"],
+    deps = [":index", ":search", ":store", ":document", ":analysis"],
+)
+
+cc_test(
+    name = "demo_e2e_test",
+    srcs = ["tests/integration/demo_e2e_test.cpp"],
+    data = [
+        ":index_files",
+        ":search_files",
+        ":delete_files",
+    ],
+    deps = ["@googletest//:gtest_main"],
 )
 
 cc_binary(

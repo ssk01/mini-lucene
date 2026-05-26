@@ -20,14 +20,19 @@ namespace index {
 
 namespace {
 
-uint8_t EncodeNorm(float norm) {
-    if (norm >= 1.0f) return 255;
-    if (norm <= 0.0f) return 0;
-    return static_cast<uint8_t>(255.0f * norm);
-}
-
-float CalcNorm(int num_tokens) {
-    return (num_tokens > 0) ? (1.0f / std::sqrt(static_cast<float>(num_tokens))) : 0.0f;
+// Byte-compatible with Java Lucene 1.0.1 Similarity.norm(int):
+//   norm_byte = ceil(255.0 / sqrt(numTerms))
+// The previous floor-truncate path silently collapsed long docs (>~1000
+// tokens) to byte 0, dropping them from scoring. Kept inline here to
+// avoid a circular `index -> search` BUILD dep; mirrored in
+// include/minilucene/search/similarity.h::EncodeLengthNorm, which is
+// the authoritative spec.
+uint8_t EncodeLengthNorm(int num_tokens) {
+    if (num_tokens <= 0) return 0;
+    double v = std::ceil(255.0 / std::sqrt(static_cast<double>(num_tokens)));
+    if (v < 1.0)   v = 1.0;
+    if (v > 255.0) v = 255.0;
+    return static_cast<uint8_t>(v);
 }
 
 }  // namespace
@@ -158,8 +163,7 @@ void DocumentWriter::WritePostings(const std::string& segment) {
                 f < static_cast<int>(field_tokens_per_doc_[d].size())) {
                 num_tokens = field_tokens_per_doc_[d][f];
             }
-            float norm = CalcNorm(num_tokens);
-            nrm->WriteByte(EncodeNorm(norm));
+            nrm->WriteByte(EncodeLengthNorm(num_tokens));
         }
     }
     nrm->Close();

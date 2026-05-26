@@ -76,12 +76,15 @@ TEST(Scoring, IDFDifferentiates) {
     // doc2: "fox"         → 1 token
     // doc3: "fox rabbit"  → 2 tokens
     // fox docFreq=3, rabbit docFreq=1, maxDoc=4
-    // idf(fox) = log(4/(3+1))+1 = log(1)+1 = 1.0
+    // idf(fox)    = log(4/(3+1))+1 = log(1)+1 = 1.0
     // idf(rabbit) = log(4/(1+1))+1 = log(2)+1 = 0.693147+1 = 1.693147
-    // fox in doc3: norm=1/sqrt(2)=0.707 → byte 180 → 180/255=0.706
-    // rabbit in doc3: norm=0.706
-    // score(fox,doc3) = 1 × 1² × 0.706 = 0.706
-    // score(rabbit,doc3) = 1 × 1.693² × 0.706 = 2.867 × 0.706 = 2.024
+    //
+    // Length norm encoded per Java Lucene 1.0.1 spec:
+    //   byte = ceil(255 / sqrt(numTerms))
+    //   doc3 (2 tokens): ceil(255/sqrt(2)) = ceil(180.31) = 181
+    //   decoded float   = 181/255 ≈ 0.70980
+    //
+    // score(rabbit, doc3) = 1 × 1.693147² × 0.70980 = 2.8676 × 0.70980 ≈ 2.0354
 
     store::RAMDirectory dir;
     auto a = std::make_unique<analysis::SimpleAnalyzer>();
@@ -102,7 +105,7 @@ TEST(Scoring, IDFDifferentiates) {
 
     ASSERT_EQ(h_fox->Length(), 3);
     ASSERT_EQ(h_rabbit->Length(), 1);
-    EXPECT_NEAR(h_rabbit->Score(0), 2.024f, 0.01f);
+    EXPECT_NEAR(h_rabbit->Score(0), 2.0354f, 0.01f);
 }
 
 // ========== 3. BooleanQuery coord factor ==========

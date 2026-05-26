@@ -10,11 +10,12 @@ namespace search {
 BooleanScorer::BooleanScorer(std::vector<std::unique_ptr<Scorer>> must,
                              std::vector<std::unique_ptr<Scorer>> should,
                              std::vector<std::unique_ptr<Scorer>> must_not,
-                             int overlap_max)
+                             int overlap_max, float boost)
     : must_(std::move(must))
     , should_(std::move(should))
     , must_not_(std::move(must_not))
-    , overlap_max_(overlap_max) {
+    , overlap_max_(overlap_max)
+    , boost_(boost) {
     for (auto& m : must_) { if (m && !m->Next()) m.reset(); }
     for (auto& s : should_) { if (s && !s->Next()) s.reset(); }
     for (auto& mn : must_not_) { if (mn && !mn->Next()) mn.reset(); }
@@ -55,17 +56,25 @@ bool BooleanScorer::Next() {
         }
 
         if (has_must_originally) {
+            // The previous `continue` here was buggy: it `continue`d the
+            // inner range-for, not the outer while(true), so a misaligned
+            // MUST scorer would fall through to the overlap/return path
+            // and emit a doc that doesn't actually satisfy every MUST.
+            // Fix: break out and re-loop.
+            bool need_retry = false;
             for (auto& m : must_) {
-                if (!m) return false;  // exhausted MUST -> no more possible matches
+                if (!m) return false;  // exhausted MUST -> no more matches
                 if (m->Doc() != target) {
                     for (auto& am : must_) {
                         if (am && am->Doc() == target) {
                             if (!am->Next()) am.reset();
                         }
                     }
-                    continue;  // to while(true)
+                    need_retry = true;
+                    break;
                 }
             }
+            if (need_retry) continue;  // restart the outer while(true)
         }
 
         if (MustNotMatch(target)) {
@@ -103,7 +112,7 @@ float BooleanScorer::Score() {
     for (auto& s : should_) {
         if (s && s->Doc() == current_doc_) total += s->Score();
     }
-    return coord * total;
+    return coord * total * boost_;
 }
 
 int BooleanScorer::FindTarget() {

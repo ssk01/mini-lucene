@@ -37,7 +37,10 @@
 #include "minilucene/store/ram_directory.h"
 #include "minilucene/store/fs_directory.h"
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <sstream>
+#include <string>
+#include <vector>
 
 namespace minilucene {
 
@@ -140,13 +143,96 @@ TEST(MissingFeature, DateFilterExcludesOutOfRange) {
 }
 
 // ===== 4. MultiSearcher — cross-index search =====
-TEST(MissingFeature, MultiSearcherMergesResults) {
-    search::MultiSearcher ms;
-    EXPECT_EQ(ms.MaxDoc(), 0) << "MultiSearcher without sub-searchers should have 0 docs";
+// Test the part that DOES work: AddSearcher aggregates MaxDoc across sub-searchers.
+// The Search() merge-and-return-Hits path is unimplemented (Hits requires a single
+// IndexReader); see GTEST_SKIP below for the honest TODO marker.
+TEST(MissingFeature, MultiSearcherAggregatesMaxDoc) {
+    store::RAMDirectory d1;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(d1, std::move(a));
+        document::Document doc; doc.Add(document::Field::Text("body", "fox"));
+        w.AddDocument(doc);
+        w.AddDocument(doc);
+        w.Close();
+    }
+    store::RAMDirectory d2;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(d2, std::move(a));
+        document::Document doc; doc.Add(document::Field::Text("body", "rabbit"));
+        w.AddDocument(doc);
+        w.Close();
+    }
 
-    search::TermQuery q(index::Term(0, "fox"));
+    auto r1 = std::make_unique<index::SegmentsReader>(d1);
+    auto r2 = std::make_unique<index::SegmentsReader>(d2);
+    auto s1 = std::make_unique<search::IndexSearcher>(*r1);
+    auto s2 = std::make_unique<search::IndexSearcher>(*r2);
+
+    search::MultiSearcher ms;
+    EXPECT_EQ(ms.MaxDoc(), 0);
+    ms.AddSearcher(std::move(s1));
+    EXPECT_EQ(ms.MaxDoc(), 2) << "after adding d1 (2 docs), MaxDoc must be 2";
+    ms.AddSearcher(std::move(s2));
+    EXPECT_EQ(ms.MaxDoc(), 3) << "after adding d2 (1 doc), MaxDoc must be 3";
+
+    r1->Close();
+    r2->Close();
+}
+
+TEST(MissingFeature, MultiSearcherSearchMergesCrossIndex) {
+    // Two separate single-doc indexes; query MUST hit both via MultiSearcher.
+    store::RAMDirectory d1, d2;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(d1, std::move(a));
+        document::Document doc;
+        doc.Add(document::Field::Keyword("id", "from-d1"));
+        doc.Add(document::Field::Text("body", "fox"));
+        w.AddDocument(doc);
+        w.Close();
+    }
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(d2, std::move(a));
+        document::Document doc;
+        doc.Add(document::Field::Keyword("id", "from-d2"));
+        doc.Add(document::Field::Text("body", "fox"));
+        w.AddDocument(doc);
+        w.Close();
+    }
+
+    auto r1 = std::make_unique<index::SegmentsReader>(d1);
+    auto r2 = std::make_unique<index::SegmentsReader>(d2);
+    auto s1 = std::make_unique<search::IndexSearcher>(*r1);
+    auto s2 = std::make_unique<search::IndexSearcher>(*r2);
+
+    search::MultiSearcher ms;
+    ms.AddSearcher(std::move(s1));
+    ms.AddSearcher(std::move(s2));
+
+    search::TermQuery q(index::Term(1, "fox"));  // field 1 = body (id Keyword is 0)
     auto hits = ms.Search(q);
-    EXPECT_EQ(hits, nullptr);
+    ASSERT_NE(hits, nullptr);
+    EXPECT_EQ(hits->Length(), 2)
+        << "MultiSearcher must merge hits from both sub-indexes";
+
+    // Hits::Doc(n) must round-trip back to the originating sub-reader's
+    // stored field — proving the synthetic global doc-id mapping works.
+    std::vector<std::string> ids;
+    for (int i = 0; i < hits->Length(); ++i) {
+        auto d = hits->Doc(i);
+        ASSERT_NE(d, nullptr) << "hit " << i << " Doc() lookup returned null";
+        auto* f = d->GetField("id");
+        ASSERT_NE(f, nullptr);
+        ids.push_back(f->Value());
+    }
+    std::sort(ids.begin(), ids.end());
+    EXPECT_EQ(ids, (std::vector<std::string>{"from-d1", "from-d2"}));
+
+    r1->Close();
+    r2->Close();
 }
 
 // ===== 5. HitQueue — Top-K collection =====
@@ -179,27 +265,31 @@ TEST(MissingFeature, HitCollectorCallback) {
     EXPECT_FLOAT_EQ(c.last_score, 0.5f);
 }
 
-// ===== 7. SegmentMergeQueue — basic ops =====
-TEST(MissingFeature, SegmentMergeQueueBasicOps) {
+// ===== 7. SegmentMergeQueue — construction only =====
+// Honest scope: empty-queue construction is all this verifies. Real ordering
+// tests require constructing SegmentMergeInfo from live SegmentReader+TermEnum,
+// which belongs in segment_merge_test.cpp where the merge path is exercised
+// end-to-end anyway.
+TEST(MissingFeature, SegmentMergeQueueConstructsEmpty) {
     index::SegmentMergeQueue queue(10);
     EXPECT_EQ(queue.Size(), 0) << "empty queue should have size 0";
-
-    // Can't test ordering without constructing SegmentMergeInfo objects
-    // (needs SegmentReader + TermEnum). The empty queue test at least
-    // verifies construction and Size().
-    // TODO: Add ordering test once SegmentMergeInfo construction is possible
-    // in a test context.
 }
 
 // ===== 6. FilteredTermEnum — filtered enumeration =====
+// Uses a real corpus with both matching and non-matching terms so the filter
+// actually has work to do; previously this used an empty doc and accepted
+// `if (has_next) ...` which silently passed when has_next was false.
 TEST(MissingFeature, FilteredTermEnumSkipsMismatches) {
     store::RAMDirectory dir;
-    auto analyzer = std::make_unique<analysis::SimpleAnalyzer>();
-    index::IndexWriter writer(dir, std::move(analyzer));
-    writer.AddDocument(document::Document());  // empty doc
-    writer.Close();
+    {
+        auto analyzer = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter writer(dir, std::move(analyzer));
+        document::Document doc;
+        doc.Add(document::Field::Text("body", "apple banana cherry ant zebra"));
+        writer.AddDocument(doc);
+        writer.Close();
+    }
 
-    // FilteredTermEnum should enumerate only matching terms
     struct StartsWithA : search::FilteredTermEnum {
         StartsWithA(index::IndexReader& r) {
             auto terms = r.Terms();
@@ -211,12 +301,18 @@ TEST(MissingFeature, FilteredTermEnumSkipsMismatches) {
     };
 
     index::SegmentReader reader(dir, "_0");
+    ASSERT_NE(reader.Terms(), nullptr) << "reader must produce a TermEnum";
     StartsWithA e(reader);
-    bool has_next = e.Next();
-    if (has_next) {
-        EXPECT_EQ(e.Current().Text()[0], 'a')
-            << "FilteredTermEnum should only yield matching terms";
+    std::vector<std::string> matched;
+    while (e.Next()) {
+        ASSERT_EQ(e.Current().Text()[0], 'a')
+            << "FilteredTermEnum yielded non-matching term '"
+            << e.Current().Text() << "'";
+        matched.push_back(e.Current().Text());
     }
+    // Corpus has "apple" and "ant" starting with 'a'; both must surface.
+    EXPECT_NE(std::find(matched.begin(), matched.end(), "apple"), matched.end());
+    EXPECT_NE(std::find(matched.begin(), matched.end(), "ant"),   matched.end());
 }
 
 // ===== 7. WildcardTermEnum + FuzzyTermEnum =====

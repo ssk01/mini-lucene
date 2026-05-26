@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <stdexcept>
 #include <vector>
 
 namespace minilucene {
@@ -17,9 +18,10 @@ class PhraseScorer : public Scorer {
 public:
     PhraseScorer(std::vector<std::unique_ptr<index::TermPositions>> tps,
                  float idf_sum, index::IndexReader& reader,
-                 int field_number, int slop)
+                 int field_number, int slop, float boost)
         : idf_sum_(idf_sum)
-        , reader_(reader), field_number_(field_number), slop_(slop) {
+        , reader_(reader), field_number_(field_number), slop_(slop)
+        , boost_(boost) {
         for (auto& tp : tps) {
             if (!tp->Next()) continue;
             tps_.push_back(std::move(tp));
@@ -59,7 +61,7 @@ public:
         Similarity sim;
         float tf = sim.Tf(freq_);
         float norm = reader_.Norm(current_doc_, field_number_);
-        return tf * idf_sum_ * idf_sum_ * norm;
+        return tf * idf_sum_ * idf_sum_ * norm * boost_;
     }
 
 private:
@@ -100,6 +102,12 @@ private:
     int CountMatches() {
         if (all_pos_.empty()) return 0;
         int m = 0;
+        // For each anchor p0 (position of term 0), count ONE phrase
+        // instance iff the rest of the phrase can be aligned within the
+        // total slop budget. The previous implementation incremented per
+        // matching subsequent term, inflating freq by (n_terms - 1) when
+        // the whole phrase fit — that's why a doc with the phrase
+        // appearing once would score as if it appeared n times.
         for (int p0 : all_pos_[0]) {
             if (slop_ == 0) {
                 bool ok = true;
@@ -111,13 +119,25 @@ private:
                 }
                 if (ok) ++m;
             } else {
+                // Greedy per-anchor: for each subsequent term, pick the
+                // position closest to the ideal (p0 + i). Sum absolute
+                // deviations. If total <= slop, count one phrase instance.
+                // (Greedy is exact when positions are independent; matches
+                // Lucene 1.0.1's SloppyPhraseScorer semantics for the
+                // common 2- and 3-term cases this port targets.)
+                int total_deviation = 0;
                 for (size_t i = 1; i < all_pos_.size(); ++i) {
+                    int target = p0 + static_cast<int>(i);
+                    int best = -1;
                     for (int p : all_pos_[i]) {
-                        if (std::abs(p - p0 - static_cast<int>(i)) <= slop_) {
-                            ++m; break;
-                        }
+                        int dev = std::abs(p - target);
+                        if (best < 0 || dev < best) best = dev;
                     }
+                    if (best < 0) { total_deviation = slop_ + 1; break; }
+                    total_deviation += best;
+                    if (total_deviation > slop_) break;
                 }
+                if (total_deviation <= slop_) ++m;
             }
         }
         return m;
@@ -138,6 +158,7 @@ private:
     index::IndexReader& reader_;
     int field_number_;
     int slop_;
+    float boost_;
     int current_doc_ = -1;
     int freq_ = 0;
 };
@@ -145,6 +166,14 @@ private:
 }  // namespace
 
 void PhraseQuery::Add(const index::Term& term) {
+    if (!terms_.empty() &&
+        term.FieldNumber() != terms_.front().FieldNumber()) {
+        throw std::invalid_argument(
+            "PhraseQuery::Add: all terms must share the same field number. "
+            "Mixing fields in a phrase is not supported by Lucene 1.0.1's "
+            "PhraseScorer (positions are stored per-field, so cross-field "
+            "position deltas are meaningless).");
+    }
     terms_.push_back(term);
 }
 
@@ -156,9 +185,14 @@ std::unique_ptr<Scorer> PhraseQuery::CreateScorer(index::IndexReader& reader) co
     Similarity sim;
 
     for (const auto& term : terms_) {
+        int doc_freq = reader.DocFreq(term);
+        if (doc_freq == 0) {
+            // A required phrase term is absent from the index — the whole
+            // phrase is unmatchable. Bail before building a doomed scorer.
+            return nullptr;
+        }
         auto tp = reader.Positions(term);
         if (!tp) return nullptr;
-        int doc_freq = reader.DocFreq(term);
         idf_sum += sim.Idf(doc_freq, reader.NumDocs());
         tps.push_back(std::move(tp));
     }
@@ -167,16 +201,22 @@ std::unique_ptr<Scorer> PhraseQuery::CreateScorer(index::IndexReader& reader) co
     int field_number = terms_[0].FieldNumber();
 
     return std::make_unique<PhraseScorer>(
-        std::move(tps), idf_sum, reader, field_number, slop_);
+        std::move(tps), idf_sum, reader, field_number, slop_, boost_);
 }
 
 std::string PhraseQuery::ToString() const {
-    std::string result = "\"";
+    std::string result;
+    if (!terms_.empty()) {
+        result = FieldDisplay(terms_[0].FieldNumber()) + ":";
+    }
+    result += "\"";
     for (size_t i = 0; i < terms_.size(); ++i) {
         if (i > 0) result += " ";
         result += terms_[i].Text();
     }
     result += "\"";
+    if (slop_ != 0) result += "~" + std::to_string(slop_);
+    if (boost_ != 1.0f) result += "^" + std::to_string(boost_);
     return result;
 }
 

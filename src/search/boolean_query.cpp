@@ -41,7 +41,7 @@ std::unique_ptr<Scorer> BooleanQuery::CreateScorer(index::IndexReader& reader) c
 
     return std::make_unique<BooleanScorer>(
         std::move(must), std::move(should), std::move(must_not),
-        overlap_max);
+        overlap_max, boost_);
 }
 
 std::string BooleanQuery::ToString() const {

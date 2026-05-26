@@ -17,7 +17,7 @@ public:
     BooleanScorer(std::vector<std::unique_ptr<Scorer>> must,
                   std::vector<std::unique_ptr<Scorer>> should,
                   std::vector<std::unique_ptr<Scorer>> must_not,
-                  int overlap_max);
+                  int overlap_max, float boost = 1.0f);
     bool Next() override;
     int Doc() const override { return current_doc_; }
     float Score() override;
@@ -38,6 +38,7 @@ private:
     int current_doc_ = -1;
     int overlap_ = 0;
     int overlap_max_;
+    float boost_ = 1.0f;
 };
 
 }  // namespace search

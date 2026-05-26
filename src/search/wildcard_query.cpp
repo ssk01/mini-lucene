@@ -59,7 +59,9 @@ std::unique_ptr<Scorer> WildcardQuery::CreateScorer(index::IndexReader& reader) 
 }
 
 std::string WildcardQuery::ToString() const {
-    return pattern_;
+    std::string s = FieldDisplay(term_.FieldNumber()) + ":" + pattern_;
+    if (boost_ != 1.0f) s += "^" + std::to_string(boost_);
+    return s;
 }
 
 }  // namespace search

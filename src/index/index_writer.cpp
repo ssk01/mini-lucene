@@ -7,6 +7,8 @@
 #include "minilucene/document/document.h"
 #include "minilucene/store/directory.h"
 
+#include <stdexcept>
+
 namespace minilucene {
 namespace index {
 
@@ -25,6 +27,9 @@ IndexWriter::~IndexWriter() {
 }
 
 void IndexWriter::AddDocument(const document::Document& doc) {
+    if (closed_) {
+        throw std::logic_error("IndexWriter::AddDocument called after Close()");
+    }
     writer_->AddDocument(doc);
     ++pending_docs_;
     if (pending_docs_ >= mergeFactor) {

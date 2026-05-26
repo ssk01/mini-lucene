@@ -27,7 +27,12 @@ std::unique_ptr<Scorer> MultiTermQuery::CreateScorer(index::IndexReader& reader)
     return bq.CreateScorer(reader);
 }
 
-std::string MultiTermQuery::ToString() const { return term_.Text() + "*"; }
+std::string MultiTermQuery::ToString() const {
+    std::string s = FieldDisplay(term_.FieldNumber()) + ":" +
+                    term_.Text() + "*";
+    if (boost_ != 1.0f) s += "^" + std::to_string(boost_);
+    return s;
+}
 
 }  // namespace search
 }  // namespace minilucene

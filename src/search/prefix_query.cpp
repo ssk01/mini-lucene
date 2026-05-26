@@ -35,7 +35,10 @@ std::unique_ptr<Scorer> PrefixQuery::CreateScorer(index::IndexReader& reader) co
 }
 
 std::string PrefixQuery::ToString() const {
-    return prefix_.Text() + "*";
+    std::string s = FieldDisplay(prefix_.FieldNumber()) + ":" +
+                    prefix_.Text() + "*";
+    if (boost_ != 1.0f) s += "^" + std::to_string(boost_);
+    return s;
 }
 
 }  // namespace search

@@ -13,23 +13,27 @@
 #include "minilucene/analysis/simple_analyzer.h"
 #include "minilucene/document/document.h"
 #include "minilucene/document/field.h"
+#include "minilucene/index/field_infos.h"
 #include "minilucene/index/index_reader.h"
 #include "minilucene/index/index_writer.h"
 #include "minilucene/index/segment_infos.h"
 #include "minilucene/index/segment_reader.h"
 #include "minilucene/index/segments_reader.h"
 #include "minilucene/index/term.h"
+#include "minilucene/query_parser/query_parser.h"
 #include "minilucene/search/hits.h"
 #include "minilucene/search/index_searcher.h"
 #include "minilucene/search/boolean_clause.h"
 #include "minilucene/search/boolean_query.h"
 #include "minilucene/search/phrase_query.h"
+#include "minilucene/search/similarity.h"
 #include "minilucene/search/term_query.h"
 #include "minilucene/store/ram_directory.h"
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1512,6 +1516,697 @@ TEST(ForensicClaude, OptimizeIsIdempotent) {
             << "score for hit #" << i << " must be identical across optimize "
                "passes (norm quantization drift would surface here).";
     }
+}
+
+// =============================================================================
+// Forensic Test 17: AddDocument after Close() must throw, not silently write.
+// =============================================================================
+//
+// Scenario:
+//   1. Construct IndexWriter, add 1 doc, Close().
+//   2. Call AddDocument on the closed writer.
+//
+// Oracle (Lucene 1.0.1 IndexWriter contract + scenario invariant):
+//   A closed writer is a terminal state. Any further Add must either (a)
+//   throw a hard error so callers learn immediately, or (b) be a documented
+//   no-op. Silently writing to a fresh DocumentWriter that nobody can flush
+//   loses data and is the worst possible failure mode. We pick the throwing
+//   contract: it matches Java Lucene's AlreadyClosedException pattern and is
+//   the only behavior testable from outside without inspecting internals.
+//
+// This catches:
+//   - Missing `closed_` check in AddDocument (silent data leak)
+//   - Caller code that reuses a writer across optimize/close boundaries
+//   - Refactors that drop the closed-state guard
+TEST(ForensicClaude, AddDocumentAfterCloseThrows) {
+    store::RAMDirectory dir;
+    auto a = std::make_unique<analysis::SimpleAnalyzer>();
+    index::IndexWriter w(dir, std::move(a));
+    w.AddDocument(MakeDoc("id-0", "alpha"));
+    w.Close();
+
+    EXPECT_THROW(w.AddDocument(MakeDoc("id-1", "beta")), std::logic_error)
+        << "AddDocument on a closed IndexWriter must throw, not silently "
+           "buffer the doc into an unreachable writer (data-loss bug).";
+}
+
+// =============================================================================
+// Forensic Test 18: Phrase across segment boundary correct under auto-merge
+// (mergeFactor=2) — does NOT manually disable merging.
+// =============================================================================
+//
+// Scenario:
+//   IndexWriter with mergeFactor=2 (forces a merge after every 2 docs).
+//   Add 4 docs, each with body containing "alpha beta" in order. The writer
+//   will auto-flush + auto-merge mid-stream; we must end with all 4 docs
+//   matching the phrase regardless of which merge cycle they landed in.
+//
+// Oracle (scenario invariant):
+//   PhraseQuery "alpha beta" slop=0 must match all 4 docs no matter how
+//   many merge passes happened. Forensic Test 14 covered the explicit
+//   Optimize() merge path; this one covers the *auto-merge during ingest*
+//   path which exercises a different code path (FlushPending triggers
+//   merger via mergeFactor, not Optimize).
+//
+// This catches:
+//   - SegmentMerger writing position deltas wrong only for triggered (not
+//     forced) merges
+//   - mergeFactor threshold off-by-one losing the doc that triggered flush
+//   - Merge mid-ingest corrupting an in-flight DocumentWriter buffer
+TEST(ForensicClaude, PhraseSurvivesAutoMergeWithMergeFactorTwo) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        w.mergeFactor = 2;
+        for (int i = 0; i < 4; ++i) {
+            document::Document d;
+            d.Add(document::Field::Text(
+                "body", std::string("doc") + std::to_string(i) +
+                            " alpha beta gamma"));
+            w.AddDocument(d);
+        }
+        w.Close();
+    }
+
+    index::SegmentsReader r(dir);
+    ASSERT_EQ(r.NumDocs(), 4);
+    search::IndexSearcher s(r);
+    search::PhraseQuery pq;
+    pq.Add(index::Term(0, "alpha"));
+    pq.Add(index::Term(0, "beta"));
+    pq.SetSlop(0);
+    auto h = s.Search(pq);
+    ASSERT_NE(h, nullptr);
+    EXPECT_EQ(h->Length(), 4)
+        << "all 4 docs contain in-order 'alpha beta'; auto-merge with "
+           "mergeFactor=2 must not corrupt position deltas. Got "
+        << h->Length() << " hits.";
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 19: IndexWriter destructor without explicit Close() must
+// flush pending docs (no silent data loss).
+// =============================================================================
+//
+// Scenario:
+//   Construct IndexWriter, add 3 docs, let it go out of scope WITHOUT calling
+//   Close(). Reopen with SegmentsReader and verify all 3 docs are visible.
+//
+// Oracle (Lucene 1.0.1 IndexWriter contract + RAII invariant):
+//   The destructor must perform whatever cleanup Close() would do. C++ RAII
+//   is the only safety net against caller code that throws between Add and
+//   Close. If ~IndexWriter doesn't flush pending docs, all writes since the
+//   last segment flush vanish.
+//
+// This catches:
+//   - Destructor that early-returns when closed_==false
+//   - FlushPending guarded by a flag the destructor doesn't set
+//   - mergeFactor change accidentally suppressing the final flush
+TEST(ForensicClaude, DestructorWithoutCloseFlushesPending) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        // mergeFactor default is large; these 3 docs sit in pending.
+        for (int i = 0; i < 3; ++i) {
+            w.AddDocument(MakeDoc(std::string("id-") + std::to_string(i),
+                                   "alpha"));
+        }
+        // Intentionally no w.Close(); destructor must flush.
+    }
+
+    index::SegmentsReader r(dir);
+    EXPECT_EQ(r.NumDocs(), 3)
+        << "~IndexWriter must flush pending docs (RAII contract). "
+           "0 docs means the destructor skipped FlushPending — silent "
+           "data loss for callers that forgot to call Close().";
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 20: QueryParser must honor `field:term` prefix end-to-end.
+// =============================================================================
+//
+// Scenario:
+//   Index 2 docs:
+//     d0: body="alpha"   title="beta"
+//     d1: body="beta"    title="alpha"
+//   Field assignment is order-of-first-encounter: id Keyword (#0), body Text (#1),
+//   title Text (#2). (Verified by FieldInfos::FieldNumber lookup, NOT assumed.)
+//
+//   Parse query "title:alpha" with a FieldInfos-backed resolver and run search.
+//
+// Oracle (Lucene 1.0.1 QueryParser spec + field-scoped invariant):
+//   "title:alpha" must match only d1 (title="alpha"), NOT d0 (body="alpha").
+//   Likewise "body:alpha" must match only d0. If both queries return the same
+//   set, the parser is throwing away the field name and putting every term
+//   into field 0 (the bug we just fixed).
+//
+// This catches:
+//   - QueryParser building Term(0, ...) regardless of parsed field
+//   - FieldResolver not wired into ParseTerm
+//   - Term-level field number ignored by search machinery
+TEST(ForensicClaude, QueryParserFieldPrefixIsHonored) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        {
+            document::Document d;
+            d.Add(document::Field::Keyword("id", "d0"));
+            d.Add(document::Field::Text("body", "alpha"));
+            d.Add(document::Field::Text("title", "beta"));
+            w.AddDocument(d);
+        }
+        {
+            document::Document d;
+            d.Add(document::Field::Keyword("id", "d1"));
+            d.Add(document::Field::Text("body", "beta"));
+            d.Add(document::Field::Text("title", "alpha"));
+            w.AddDocument(d);
+        }
+        w.Close();
+    }
+
+    auto fi = index::FieldInfos::Read(dir, "_0");
+    ASSERT_NE(fi, nullptr);
+    ASSERT_GE(fi->FieldNumber("body"),  0);
+    ASSERT_GE(fi->FieldNumber("title"), 0);
+    ASSERT_NE(fi->FieldNumber("body"), fi->FieldNumber("title"))
+        << "body and title must have distinct field numbers; otherwise the "
+           "field-prefix test is meaningless.";
+
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    auto search_with_field = [&](const std::string& q_text) {
+        analysis::SimpleAnalyzer a;
+        query_parser::QueryParser parser("body", q_text, &a);
+        parser.UseFieldInfos(*fi);
+        parser.SetDefaultFieldNumber(fi->FieldNumber("body"));
+        auto q = parser.Parse();
+        if (!q) return std::vector<int>{};
+        auto h = s.Search(*q);
+        std::vector<int> ids;
+        if (h) for (int i = 0; i < h->Length(); ++i) ids.push_back(h->Id(i));
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    };
+
+    {
+        auto ids = search_with_field("title:alpha");
+        const std::vector<int> expected = {1};
+        EXPECT_EQ(ids, expected)
+            << "'title:alpha' must match only d1 (title=alpha). If d0 hits "
+               "too, QueryParser is using field 0 instead of the resolved "
+               "field number.";
+    }
+    {
+        auto ids = search_with_field("body:alpha");
+        const std::vector<int> expected = {0};
+        EXPECT_EQ(ids, expected)
+            << "'body:alpha' must match only d0 (body=alpha). If d1 hits "
+               "too, the field resolver is leaking.";
+    }
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 21: QueryParser must throw on unknown field (not silently
+// fall back to field 0).
+// =============================================================================
+//
+// Scenario:
+//   No resolver set; parse "title:hello" with default field "body".
+//
+// Oracle (scenario invariant + safety contract):
+//   The old QueryParser silently constructed Term(0, "hello") regardless of
+//   the prefix. That's a wrong-results-with-no-error bug. The new contract:
+//   any explicit non-default field name MUST throw std::runtime_error so
+//   the caller learns immediately.
+//
+// This catches:
+//   - Removing the ResolveField guard
+//   - Field prefix being accepted but discarded
+TEST(ForensicClaude, QueryParserUnknownFieldThrows) {
+    query_parser::QueryParser parser("body", "title:hello");
+    EXPECT_THROW(parser.Parse(), std::runtime_error)
+        << "non-default field name without resolver must throw, not "
+           "silently use field 0.";
+}
+
+// =============================================================================
+// Forensic Test 22: AND / OR / NOT keyword semantics match Java QueryParser.
+// =============================================================================
+//
+// Corpus (single field "body"):
+//   d0: "alpha"
+//   d1: "beta"
+//   d2: "alpha beta"
+//   d3: "gamma"
+//
+// Oracle (Lucene 1.0.1 QueryParser.jj addClause):
+//   "alpha AND beta" → MUST alpha, MUST beta              → {d2}
+//   "alpha OR beta"  → SHOULD alpha, SHOULD beta          → {d0,d1,d2}
+//   "alpha NOT beta" → MUST alpha (joined by NOT becomes +alpha),
+//                       MUST_NOT beta                       → {d0}
+//     Why MUST? Java's addClause: when followed by NOT-modified clause,
+//     the previous clause is not auto-upgraded (CONJ_NONE), so alpha stays
+//     SHOULD. But a SHOULD-only + MUST_NOT BooleanQuery requires the
+//     SHOULD to actually match — exactly Lucene 1.0.1 behavior. So result
+//     is still {d0}.
+//   "NOT beta"       → MUST_NOT-only                       → {} (Lucene
+//                                                              spec: at
+//                                                              least one
+//                                                              positive
+//                                                              clause
+//                                                              required)
+TEST(ForensicClaude, QueryParserAndOrNotKeywords) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        for (const auto& body :
+             std::vector<std::string>{"alpha", "beta", "alpha beta", "gamma"}) {
+            document::Document d;
+            d.Add(document::Field::Text("body", body));
+            w.AddDocument(d);
+        }
+        w.Close();
+    }
+
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    auto run = [&](const std::string& q_text) {
+        analysis::SimpleAnalyzer a;
+        query_parser::QueryParser parser("body", q_text, &a);
+        auto q = parser.Parse();
+        std::vector<int> ids;
+        if (!q) return ids;
+        auto h = s.Search(*q);
+        if (h) for (int i = 0; i < h->Length(); ++i) ids.push_back(h->Id(i));
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    };
+
+    EXPECT_EQ(run("alpha AND beta"), (std::vector<int>{2}))
+        << "AND must require BOTH terms (d2 is the only doc with both).";
+    EXPECT_EQ(run("alpha OR beta"),  (std::vector<int>{0, 1, 2}))
+        << "OR is the default; any of alpha or beta matches.";
+    EXPECT_EQ(run("alpha NOT beta"), (std::vector<int>{0}))
+        << "NOT modifier prohibits beta; among alpha-containing docs only "
+           "d0 remains (d2 has both).";
+    EXPECT_EQ(run("NOT beta"),       (std::vector<int>{}))
+        << "MUST_NOT-only must return 0 hits (Forensic Test 15 contract).";
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 23: Parenthesised grouping changes BooleanQuery shape.
+// =============================================================================
+//
+// Corpus (single field "body"):
+//   d0: "alpha gamma"
+//   d1: "beta gamma"
+//   d2: "alpha"
+//   d3: "beta"
+//   d4: "gamma"
+//
+// Oracle:
+//   "(alpha OR beta) AND gamma" → MUST (alpha OR beta), MUST gamma → {d0,d1}
+//   "alpha OR beta AND gamma"   → SHOULD alpha, MUST beta, MUST gamma
+//                                 (AND retroactively makes beta MUST and
+//                                  gamma MUST)
+//                               → docs where (beta AND gamma) OR alpha
+//                               → {d0, d1, d2}  (d2 satisfies the SHOULD
+//                                                 alpha; d1 satisfies +beta
+//                                                 +gamma; d0 satisfies both
+//                                                 alpha AND gamma — alpha
+//                                                 alone is enough since
+//                                                 SHOULD is permissive)
+//   Without parens vs with parens MUST differ on d2.
+//
+// This catches:
+//   - ParseGroup not recursing on '('
+//   - Missing ')' handling leaving the parser stuck
+//   - Sub-query result not being treated as a single atom for the outer
+//     conjunction
+TEST(ForensicClaude, QueryParserParenGrouping) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        for (const auto& body : std::vector<std::string>{
+                 "alpha gamma", "beta gamma", "alpha", "beta", "gamma"}) {
+            document::Document d;
+            d.Add(document::Field::Text("body", body));
+            w.AddDocument(d);
+        }
+        w.Close();
+    }
+
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+    auto run = [&](const std::string& q_text) {
+        analysis::SimpleAnalyzer a;
+        query_parser::QueryParser parser("body", q_text, &a);
+        auto q = parser.Parse();
+        std::vector<int> ids;
+        if (!q) return ids;
+        auto h = s.Search(*q);
+        if (h) for (int i = 0; i < h->Length(); ++i) ids.push_back(h->Id(i));
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    };
+
+    EXPECT_EQ(run("(alpha OR beta) AND gamma"),
+              (std::vector<int>{0, 1}))
+        << "parens scope the OR so gamma must co-occur with alpha or beta.";
+
+    // Without parens, AND binds tighter (beta AND gamma) then OR with alpha:
+    // d0 (alpha gamma) matches via SHOULD alpha
+    // d1 (beta gamma) matches via MUST beta + MUST gamma
+    // d2 (alpha) matches via SHOULD alpha
+    // d3 (beta) — no gamma, no alpha → out
+    // d4 (gamma) — no alpha, no beta → out
+    // Without parens: SHOULD alpha + MUST beta + MUST gamma. The SHOULD
+    // is optional and doesn't force inclusion; only docs with BOTH beta
+    // and gamma survive. Among d0..d4 only d1 (beta gamma) qualifies.
+    EXPECT_EQ(run("alpha OR beta AND gamma"),
+              (std::vector<int>{1}))
+        << "AND has higher precedence than the default OR; only docs "
+           "with BOTH beta AND gamma survive.";
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 24: Boost `^N` scales score linearly through TermQuery.
+// =============================================================================
+//
+// Corpus (single field "body"):
+//   d0: "alpha"
+//   d1: "alpha"
+//
+// Query A: `alpha`           → baseline score s0 for d0 (== s1 for d1 due
+//                              to identical doc shapes).
+// Query B: `alpha^2.5`       → score should be EXACTLY 2.5 * s0.
+//
+// Oracle (Lucene 1.0.1 Similarity / Query.boost contract):
+//   Boost is a query-time multiplier applied at the scorer level. For a
+//   single-term query, the score formula is:
+//     tf * idf * idf * queryNorm * fieldNorm * boost
+//   Holding everything else fixed (same doc, same term, same reader),
+//   the ratio Score(boosted)/Score(unboosted) must equal `boost`.
+//
+// This catches:
+//   - Query.boost_ not wired through to the scorer ctor
+//   - Scorer.Score() forgetting to multiply by boost
+//   - QueryParser not parsing `^N` (would silently treat `alpha^2.5` as
+//     the literal term "alpha^2.5" and return 0 hits)
+TEST(ForensicClaude, BoostScalesTermQueryScoreLinearly) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        for (int i = 0; i < 2; ++i) {
+            document::Document d;
+            d.Add(document::Field::Text("body", "alpha"));
+            w.AddDocument(d);
+        }
+        w.Close();
+    }
+
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    auto first_score = [&](const std::string& q_text) {
+        analysis::SimpleAnalyzer a;
+        query_parser::QueryParser parser("body", q_text, &a);
+        auto q = parser.Parse();
+        EXPECT_NE(q, nullptr) << "parser returned null for '" << q_text
+                              << "'; check boost syntax handling";
+        if (!q) return 0.0f;
+        auto h = s.Search(*q);
+        EXPECT_NE(h, nullptr);
+        EXPECT_GT(h->Length(), 0);
+        return h->Score(0);
+    };
+
+    float s0 = first_score("alpha");
+    float s1 = first_score("alpha^2.5");
+    ASSERT_GT(s0, 0.0f);
+    ASSERT_GT(s1, 0.0f);
+    EXPECT_NEAR(s1 / s0, 2.5f, 1e-4f)
+        << "Score(alpha^2.5) / Score(alpha) must equal 2.5. Actual ratio: "
+        << (s1 / s0) << ". If ratio == 1.0, boost was parsed but not "
+        << "plumbed into the scorer. If parser returned null, `^` was "
+        << "consumed into the term text.";
+
+    // Boost == 1.0 must be a no-op (Query default).
+    float s_one = first_score("alpha^1.0");
+    EXPECT_NEAR(s_one, s0, 1e-4f) << "boost=1.0 must not change scores";
+
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 25: PhraseQuery rejects cross-field term mixing.
+// =============================================================================
+//
+// Scenario:
+//   PhraseQuery::Add(Term(0, "alpha")) followed by Add(Term(1, "beta")).
+//
+// Oracle (Lucene 1.0.1 PhraseScorer contract + scenario invariant):
+//   Position deltas in `.prx` are stored per-(field, doc), so a phrase
+//   that mixes field 0 and field 1 has no meaningful position semantics.
+//   The Java implementation effectively assumes all terms share a field
+//   (PhraseQuery::getField returns the first term's field, used to fetch
+//   norms etc.). The C++ port previously accepted any term and silently
+//   misbehaved. The new contract: reject at Add() time with
+//   std::invalid_argument so the bug surfaces immediately.
+//
+// This catches:
+//   - PhraseQuery::Add losing the cross-field guard
+//   - Refactors that move the check into CreateScorer (too late — by then
+//     the caller has already committed to a malformed query)
+// =============================================================================
+// Forensic Test 26: PhraseScorer freq counts PHRASE INSTANCES, not per-term
+// matches. (Adversarial slop oracle to expose over-counting.)
+// =============================================================================
+//
+// Corpus (single field "body"):
+//   d0: "alpha beta alpha gamma"
+//     positions: alpha@0, beta@1, alpha@2, gamma@3
+//
+// Query: PhraseQuery("alpha beta gamma") slop=1
+//
+// Oracle (Lucene 1.0.1 SloppyPhraseScorer phraseFreq contract):
+//   freq is the number of *distinct phrase instances* matched in the doc,
+//   NOT the sum of how many subsequent terms each anchor sees within slop.
+//   Hand-derivation:
+//     anchor alpha@0:
+//       expected beta @ 1, gamma @ 2. actual beta@1 (off 0), gamma@3 (off 1).
+//       total deviation 1 ≤ slop=1 → counts as ONE phrase instance.
+//     anchor alpha@2:
+//       expected beta @ 3 — actual only beta@1 (off 2). Out of slop.
+//   Expected freq: 1.  Expected hit list: {d0}.
+//
+// The buggy per-term-increment code returns freq=3 (one for beta's match
+// at p0=0, one for gamma's match at p0=0, one for gamma's match at p0=2),
+// inflating tf=sqrt(freq) by sqrt(3)/sqrt(1) ≈ 1.73.
+//
+// This test asserts hit count + bounds on the relative score vs a single-
+// term anchor query, both of which red-flag the over-count.
+TEST(ForensicClaude, PhraseScorerSlopFreqCountsInstancesNotTerms) {
+    // Two docs in the same index — same query terms, same idf, so the
+    // ONLY differences between their scores are tf(freq) and lengthNorm.
+    //
+    //   d0: "alpha beta gamma"           (3 tokens; phrase appears ONCE)
+    //   d1: "alpha beta alpha gamma"     (4 tokens; phrase appears ONCE at
+    //                                      anchor p0=0; the alpha@2 anchor
+    //                                      sits 1 over the slop budget)
+    //
+    // Expected freq (Lucene 1.0.1 SloppyPhraseScorer):
+    //   d0.freq = 1, d1.freq = 1.
+    //
+    // Length norm: d0 has fewer tokens → larger lengthNorm → d0 ranks
+    // HIGHER. So d0.score > d1.score.
+    //
+    // Bug behaviour: per-term inflation gave d1.freq = 3 (one for beta
+    // matching anchor 0, one for gamma matching anchor 0, one for gamma
+    // matching anchor 2). With tf=sqrt(3)≈1.73 vs tf=1, plus only a
+    // modest norm penalty for one extra token, d1 ends up scoring HIGHER
+    // than d0 — flipping the rank. We assert the correct rank d0 > d1.
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        document::Document d0;
+        d0.Add(document::Field::Text("body", "alpha beta gamma"));
+        w.AddDocument(d0);
+        document::Document d1;
+        d1.Add(document::Field::Text("body", "alpha beta alpha gamma"));
+        w.AddDocument(d1);
+        w.Close();
+    }
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    search::PhraseQuery pq;
+    pq.Add(index::Term(0, "alpha"));
+    pq.Add(index::Term(0, "beta"));
+    pq.Add(index::Term(0, "gamma"));
+    pq.SetSlop(1);
+
+    auto h = s.Search(pq);
+    ASSERT_NE(h, nullptr);
+    ASSERT_EQ(h->Length(), 2)
+        << "both docs must match the phrase; got " << h->Length();
+
+    // h is sorted by score descending. Find the score for d0 vs d1 by id.
+    float score_d0 = 0.0f, score_d1 = 0.0f;
+    for (int i = 0; i < h->Length(); ++i) {
+        if (h->Id(i) == 0) score_d0 = h->Score(i);
+        if (h->Id(i) == 1) score_d1 = h->Score(i);
+    }
+    ASSERT_GT(score_d0, 0.0f);
+    ASSERT_GT(score_d1, 0.0f);
+    EXPECT_GT(score_d0, score_d1)
+        << "d0 (3 tokens, freq=1) MUST outrank d1 (4 tokens, freq=1). "
+           "score_d0=" << score_d0 << " score_d1=" << score_d1
+        << ". If d1 wins, PhraseScorer is treating each per-term slop "
+           "match as a separate phrase instance, inflating d1's freq to "
+           "3 and overwhelming d0's length-norm advantage.";
+
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 27: reversed phrase requires slop >= 2 (Lucene "edits" model).
+// =============================================================================
+//
+// Corpus: d0 body = "beta alpha"
+// Position frame: beta@0, alpha@1
+//
+// PhraseQuery("alpha beta")
+//   slop=0 → no hit (#13 already covers this).
+//   slop=1 → still no hit: a transposition costs 2 edits in Lucene's slop
+//            model, so slop=1 is not enough.
+//   slop=2 → hit (1 doc).
+TEST(ForensicClaude, PhraseScorerReverseRequiresSlopTwo) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        document::Document d;
+        d.Add(document::Field::Text("body", "beta alpha"));
+        w.AddDocument(d);
+        w.Close();
+    }
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    auto run = [&](int slop) {
+        search::PhraseQuery pq;
+        pq.Add(index::Term(0, "alpha"));
+        pq.Add(index::Term(0, "beta"));
+        pq.SetSlop(slop);
+        auto h = s.Search(pq);
+        return h ? h->Length() : 0;
+    };
+
+    EXPECT_EQ(run(0), 0) << "slop=0 reversed must not match";
+    EXPECT_EQ(run(1), 0)
+        << "slop=1 reversed must not match — Java treats transposition as "
+           "2 edits. If it matches at slop=1, the impl is using |delta| "
+           "with single-edit cost which contradicts the spec.";
+    EXPECT_EQ(run(2), 1)
+        << "slop=2 reversed MUST match (transposition costs exactly 2).";
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 28: 3-term phrase with one missing must NOT match regardless
+// of slop. (Catches a `||` vs `&&` confusion in the per-term loop.)
+// =============================================================================
+//
+// Corpus: d0 body = "alpha beta delta"
+//   positions: alpha@0, beta@1, delta@2  (no gamma!)
+//
+// Query: PhraseQuery("alpha beta gamma") slop=100
+// Oracle: 0 hits — gamma is missing entirely. CreateScorer should return
+//   nullptr because Positions("gamma") yields a scorer that immediately
+//   exhausts.
+TEST(ForensicClaude, PhraseScorerMissingTermNeverMatches) {
+    store::RAMDirectory dir;
+    {
+        auto a = std::make_unique<analysis::SimpleAnalyzer>();
+        index::IndexWriter w(dir, std::move(a));
+        document::Document d;
+        d.Add(document::Field::Text("body", "alpha beta delta"));
+        w.AddDocument(d);
+        w.Close();
+    }
+    index::SegmentsReader r(dir);
+    search::IndexSearcher s(r);
+
+    search::PhraseQuery pq;
+    pq.Add(index::Term(0, "alpha"));
+    pq.Add(index::Term(0, "beta"));
+    pq.Add(index::Term(0, "gamma"));  // not in doc
+    pq.SetSlop(100);
+
+    auto h = s.Search(pq);
+    // Either nullptr (Scorer creation bailed) or empty Hits is acceptable.
+    int n = h ? h->Length() : 0;
+    EXPECT_EQ(n, 0)
+        << "phrase containing a term absent from the doc must never match; "
+           "got " << n << " hits.";
+    r.Close();
+}
+
+// =============================================================================
+// Forensic Test 29: Length-norm byte matches Java Lucene 1.0.1
+// Similarity.norm(int numTerms) = (byte) ceil(255 / sqrt(numTerms)).
+// =============================================================================
+//
+// Why: legacy C++ code computed `(uint8_t)(255 * 1/sqrt(numTerms))` which
+//   (a) uses floor (cast truncates), off-by-one vs Java's ceil;
+//   (b) collapses to byte 0 for any numTerms > ~1000 because `255 *
+//       (1/sqrt(numTerms))` falls below 1.0 — silently making long docs
+//       unscoreable.
+//
+// Oracle: bytewise values computed by hand from Java's formula.
+//   numTerms=1     → ceil(255/1)     = 255
+//   numTerms=4     → ceil(255/2)     = 128
+//   numTerms=9     → ceil(255/3)     = 85
+//   numTerms=10000 → ceil(255/100)   = 3
+//   numTerms=65025 → ceil(255/255)   = 1   (the boundary; never 0)
+//   numTerms=1e6   → ceil(255/1000)  = 1   (the long-doc bug case)
+TEST(ForensicClaude, LengthNormByteMatchesJavaSpec) {
+    search::Similarity sim;
+    EXPECT_EQ(sim.EncodeLengthNorm(0),       0)   << "empty doc -> 0";
+    EXPECT_EQ(sim.EncodeLengthNorm(1),       255) << "1 token";
+    EXPECT_EQ(sim.EncodeLengthNorm(4),       128) << "4 tokens (was 127 with floor)";
+    EXPECT_EQ(sim.EncodeLengthNorm(9),       85)  << "9 tokens (was 84 with floor)";
+    EXPECT_EQ(sim.EncodeLengthNorm(10000),   3)   << "10k tokens";
+    EXPECT_EQ(sim.EncodeLengthNorm(65025),   1)   << "boundary, never 0";
+    EXPECT_EQ(sim.EncodeLengthNorm(1000000), 1)
+        << "1M-token doc must NOT collapse to byte 0 — that was the silent "
+           "data-loss bug. Got byte=" << int(sim.EncodeLengthNorm(1000000));
+}
+
+TEST(ForensicClaude, PhraseQueryRejectsCrossFieldTerms) {
+    search::PhraseQuery pq;
+    pq.Add(index::Term(0, "alpha"));  // ok — first term sets the field
+    EXPECT_THROW(pq.Add(index::Term(1, "beta")), std::invalid_argument)
+        << "mixing field 0 + field 1 in one phrase must throw.";
+
+    // Same-field continues to work.
+    EXPECT_NO_THROW(pq.Add(index::Term(0, "gamma")));
 }
 
 }  // namespace minilucene

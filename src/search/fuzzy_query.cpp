@@ -57,7 +57,10 @@ std::unique_ptr<Scorer> FuzzyQuery::CreateScorer(index::IndexReader& reader) con
 }
 
 std::string FuzzyQuery::ToString() const {
-    return term_.Text() + "~";
+    std::string s = FieldDisplay(term_.FieldNumber()) + ":" +
+                    term_.Text() + "~";
+    if (boost_ != 1.0f) s += "^" + std::to_string(boost_);
+    return s;
 }
 
 }  // namespace search
